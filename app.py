@@ -18,9 +18,9 @@ st.title("Dashboard Building AM")
 # Read Data and gather directory information
 cwd = os.getcwd()
 directory = cwd +'/hka-aqm-am/'
-files = [f for f in os.listdir(directory)]
+files = [f.removeprefix('._') for f in os.listdir(directory)]
 rooms = sorted(set([f.split("_")[0].removeprefix('hka-aqm-') for f in files]))
-available_dates_per_room = {room: [f.split("_", 1)[1].split(".")[0] for f in files if f.split("_")[0].removeprefix('hka-aqm-') == room] for room in rooms}
+available_dates_per_room = {room: sorted(set([f.split("_", 1)[1].split(".")[0] for f in files if f.split("_")[0].removeprefix('hka-aqm-') == room])) for room in rooms}
 
 # Sidebar
 st.sidebar.header("Dashboard Building AM")
@@ -32,10 +32,14 @@ max_date = datetime.strptime(available_dates_per_room[input_device][-1], "%Y_%m_
 input_date = st.sidebar.date_input(label= "Select Date", value= min_date, min_value= min_date, max_value= max_date)
 clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
 
-# Room data for the selected day
+# Room data for the selected room
 df_room = pd.concat([pd.read_csv(directory + f"hka-aqm-{input_device}_{date}.dat", skiprows=1, sep=';', engine='python') for date in available_dates_per_room[input_device]])
 df_room = utils.prepare_data_for_plot(df_room, clean_data)
 
+# create prediction values for the room
+model = utils.load_model('models/transformer_model.pth')
+scaler = utils.load_scaler('models/scaler_transformer.pth')
+df_room_pred = utils.predict_data(model, scaler, df_room, clean_data=clean_data)
 # check if file for the selected date exists
 data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
 if not data_exists:
@@ -45,8 +49,11 @@ if not data_exists:
     st.plotly_chart(utils.plot_available_data(df_room), use_container_width=True)
     st.stop()
 
-df_room_date = pd.read_csv(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat", skiprows=1, sep=';', engine='python')
-df_room_date = utils.prepare_data_for_plot(df_room_date, clean_data)
+# df_room_date = pd.read_csv(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat", skiprows=1, sep=';', engine='python')
+# df_room_date = utils.prepare_data_for_plot(df_room_date, clean_data)
+# df_room_date = df_room[df_room['date_time'] == input_date]
+df_room_date = df_room_pred[df_room_pred['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
+print(df_room_date)
 
 c1, c2 = st.columns([1, 2])
 
@@ -63,12 +70,12 @@ with c2:
     with kpi_tmp:
         container = st.container(border=True)
         with container:
-            st.metric("~Temperature", f"{df_room_date['tmp'].mean().round(2)} °C")
+            st.metric("~Temperature", f"{round(df_room_date['tmp'].mean(), 2)} °C")
 
     with kpi_hum:
         container = st.container(border=True)
         with container:
-            st.metric("~Humidity", f"{df_room_date['hum'].mean().round(2)} %")
+            st.metric("~Humidity", f"{round(df_room_date['hum'].mean(), 2)} %")
 
     with kpi_co2:
         container = st.container(border=True)

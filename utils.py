@@ -9,6 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from copy import deepcopy
 from models import TransformerModel
+import joblib
 
 def prepare_data_for_plot(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
     """
@@ -56,6 +57,9 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     y_title = feature_title_dictionary[y_feature] if y_feature in feature_title_dictionary and y_title is not None else y_feature
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature], mode=mode))
+    # add a trace for CO2_pred if it exists
+    if 'CO2_pred' in df.columns and 'CO2' == y_feature:
+        fig.add_trace(go.Scatter(x=df['date_time_rounded'], y=df['CO2_pred'], mode=mode, line=dict(color='red')))
     fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
 
     return fig
@@ -76,7 +80,7 @@ def plot_available_data(df: pd.DataFrame):
 
     return fig
 
-def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=10, aggregation_level: str = 'hourly') -> np.array:
+def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=20, aggregation_level: str = 'quarter_hour') -> np.array:
     """
     args:   df: pd.DataFrame
             y_feature: str
@@ -155,10 +159,10 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
 
     # Setup data loaders for batch
     train_dataset = TensorDataset(x_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=8, pin_memory=True)
 
     test_dataset = TensorDataset(x_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=8, pin_memory=True)
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
@@ -224,3 +228,134 @@ def evaluate_transformer_model(device: torch.device, test_loader: DataLoader, mo
 
     rmse = np.sqrt(np.mean((scaler.inverse_transform(np.array(predictions).reshape(-1, 1)) - scaler.inverse_transform(y_test.numpy().reshape(-1, 1)))**2))
     print(f"Score (RMSE): {rmse:.4f}")
+
+def get_device() -> torch.device:
+    has_mps = torch.backends.mps.is_built()
+    return "mps" if has_mps else "cuda" if torch.cuda.is_available() else "cpu"
+
+def load_model(model_path: str='model.pth', device: torch.device=get_device()) -> nn.Module:
+    model = TransformerModel().to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+
+    return model
+
+def load_scaler(scaler_path: str='scaler.pkl') -> StandardScaler:
+    scaler = torch.load('models/scaler_transformer.pth')
+
+    return scaler
+
+def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
+    """
+    args:   device: torch.device
+            model: nn.Module
+            scaler: StandardScaler
+            df: pd.DataFrame
+            clean_data: bool
+            window_size: int
+            aggregation_level: str
+            y_feature: str
+
+    returns: pd.DataFrame
+    """
+    df_pred = get_data_for_prediction(df, clean_data, window_size, aggregation_level, y_feature)
+    print(df_pred.shape)
+    # print count of NaN in CO2_context
+    print(df_pred['CO2_context'].isna().sum())
+    valid_mask = df_pred['CO2_context'].notna()
+
+    batch_size = 4098
+    context_size = window_size
+    # Prepare the data for model input
+    contexts = np.stack(df_pred.loc[valid_mask, 'CO2_context'].values)
+    contexts_tensor = torch.tensor(contexts, dtype=torch.float32).view(-1, context_size, 1)
+
+    # Initialize a placeholder for predictions with NaN values
+    df_pred['CO2_pred'] = np.nan  # Add this column initially filled with NaN
+    predictions = np.empty((contexts_tensor.shape[0], 1))
+
+    # Make predictions
+    dbg = 0
+    model.eval()
+    with torch.no_grad():
+        print(contexts_tensor.shape)
+        for i in range(0, contexts_tensor.shape[0], batch_size):
+            if i//50000 > dbg:
+                print(f"{i} rows processed out of {contexts_tensor.shape[0]}")
+                dbg += 1
+            batch = contexts_tensor[i:i+batch_size].to(device)
+            batch_predictions = model(batch).cpu().numpy().squeeze()
+            # Scale back predictions and insert them into the correct positions
+            #df_pred.loc[valid_mask, 'CO2_pred'].iloc[i:i+batch_size] = scaler.inverse_transform(batch_predictions.reshape(-1, 1)).flatten()
+            predictions[i:i+batch_size, :] = scaler.inverse_transform(batch_predictions.reshape(-1, 1))
+    
+    df_pred.loc[valid_mask, 'CO2_pred'] = predictions.flatten()
+    print("NaN count after prediction: ", df_pred['CO2_pred'].isna().sum())
+
+    # for each row, if the cell "CO2_context" is not NaN, predict a CO2 value based on the context and save it to "CO2_pred"
+    # df_pred['CO2_pred'] = np.nan
+    # model.eval()
+    # prints = 0
+    # with torch.no_grad():
+    #     for i in range(df_pred.shape[0]):
+    #         if i%1000 == 0:
+    #             print(f"{i} rows processed out of {df_pred.shape[0]}")
+    #         if isinstance(df_pred['CO2_context'][i], np.ndarray):
+    #             if prints < 5:
+    #                 print('Predicting CO2 value for row:', i)
+    #                 prints += 1
+    #             context = torch.tensor(df_pred['CO2_context'][i], dtype=torch.float32).view(1, -1, 1).to(device)
+    #             pred = model(context).squeeze().item()
+    #             df_pred.loc[i, 'CO2_pred'] = scaler.inverse_transform(np.array(pred).reshape(-1, 1))[0][0]
+    
+    return df_pred
+
+def get_data_for_prediction(df: pd.DataFrame, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
+    """
+    args:   df: pd.DataFrame
+            clean_data: bool
+
+    returns: pd.DataFrame
+    """
+    df_cpy = prepare_data_for_plot(df, clean_data)
+
+    if aggregation_level == "hour":
+        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('60T')
+    elif aggregation_level == "half_hour":
+        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.floor('30T')
+    elif aggregation_level == "quarter_hour":
+        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.floor('15T')
+    else:
+        raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
+
+
+    df_help = df_cpy[['device_id', 'date_time_rounded', y_feature]]
+
+    df_help = df_help.groupby(['device_id', 'date_time_rounded']).mean().reset_index()
+    
+    # create 'consecutive_data_point' thats 1 if the previous data point is 1 hour before the current data point and device_id is the same, else 0
+    time_delta = 3600 if aggregation_level == 'hour' else 1800 if aggregation_level == 'half_hour' else 900
+    df_help['consecutive_data_point'] = (df_help['date_time_rounded'] - df_help['date_time_rounded'].shift(1)).dt.total_seconds() == time_delta
+    df_help['consecutive_data_point'] = df_help['consecutive_data_point'].astype(int)
+    
+    # Identify changes and resets (when the value is '0' or there's a change in 'device_id')
+    df_help['reset'] = (df_help['consecutive_data_point'] == 0) | (df_help['device_id'] != df_help['device_id'].shift(1))
+
+    # Create a group identifier that increments every time a reset occurs
+    df_help['group'] = df_help['reset'].cumsum()
+
+    # Calculate cumulative sum of "1"s within each group
+    df_help['consecutive_data_points'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].cumsum()
+    df_help['group_size'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].transform('count')
+
+    # add column that contains a list of the previous $window_size data points to df_help.
+    df_help['CO2_context'] = [df_help['CO2'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
+
+    # throw out all datapoints that are not predictable
+    df_help = df_help[df_help['consecutive_data_points'] >= window_size]
+
+    # join the column "CO2_context" to df_cpy based on  date_time_rounded and device_id columns
+    print("cpy: ", df_cpy.shape)
+    print("help: ", df_help.shape)
+    df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', 'CO2_context']], on=['device_id', 'date_time_rounded'], how='left')
+    print("NaN count: ", df_cpy['CO2_context'].isna().sum())
+    return df_cpy
