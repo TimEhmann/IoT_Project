@@ -33,10 +33,20 @@ input_date = st.sidebar.date_input(label= "Select Date", value= min_date, min_va
 clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
 
 # Room data for the selected day
-df_room_date = pd.read_csv(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat", skiprows=1, sep=';', engine='python')
-df_room_date = utils.prepare_data_for_plot(df_room_date, clean_data)
 df_room = pd.concat([pd.read_csv(directory + f"hka-aqm-{input_device}_{date}.dat", skiprows=1, sep=';', engine='python') for date in available_dates_per_room[input_device]])
 df_room = utils.prepare_data_for_plot(df_room, clean_data)
+
+# check if file for the selected date exists
+data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
+if not data_exists:
+    st.markdown("## No data available")
+    st.markdown(f"## Overview of available dates for {input_device}")
+    st.markdown("### Average CO2 in ppm per available date")
+    st.plotly_chart(utils.plot_available_data(df_room), use_container_width=True)
+    st.stop()
+
+df_room_date = pd.read_csv(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat", skiprows=1, sep=';', engine='python')
+df_room_date = utils.prepare_data_for_plot(df_room_date, clean_data)
 
 c1, c2 = st.columns([1, 2])
 
@@ -47,68 +57,64 @@ with c1:
 
 
 with c2:
-    # Your existing code here
-    try:
-        kpi_tmp, kpi_hum, kpi_co2 = st.columns(3)
-        kpi_voc, kpi_vis, placeholder = st.columns(3)
+    kpi_tmp, kpi_hum, kpi_co2 = st.columns(3)
+    kpi_voc, kpi_vis, placeholder = st.columns(3)
 
-        with kpi_tmp:
-            container = st.container(border=True)
-            with container:
-                st.metric("~Temperature", f"{df_room_date['tmp'].mean().round(2)} °C")
+    with kpi_tmp:
+        container = st.container(border=True)
+        with container:
+            st.metric("~Temperature", f"{df_room_date['tmp'].mean().round(2)} °C")
 
-        with kpi_hum:
-            container = st.container(border=True)
-            with container:
-                st.metric("~Humidity", f"{df_room_date['hum'].mean().round(2)} %")
+    with kpi_hum:
+        container = st.container(border=True)
+        with container:
+            st.metric("~Humidity", f"{df_room_date['hum'].mean().round(2)} %")
 
-        with kpi_co2:
-            container = st.container(border=True)
-            with container:
-                st.metric("~CO2", f"{int(df_room_date['CO2'].mean())} ppm")
-        
-        with kpi_voc:
-            container = st.container(border=True)
-            with container:
-                st.metric("~VOC", f"{int(df_room_date['VOC'].mean())} ppb")
-        
-        with kpi_vis:
-            container = st.container(border=True)
-            with container:
-                st.metric("~Visibility", f"{int(df_room_date['vis'].mean())}")
-
-    except AttributeError:
-        st.markdown("## No data available")
-        with st.expander("See explanation"):
-            st.write(f"No data available for the selected room {input_device} and room {input_date}. To see what data is available, look 'Gaps in the data'.")              
-
+    with kpi_co2:
+        container = st.container(border=True)
+        with container:
+            st.metric("~CO2", f"{int(df_room_date['CO2'].mean())} ppm")
+    
+    with kpi_voc:
+        container = st.container(border=True)
+        with container:
+            st.metric("~VOC", f"{int(df_room_date['VOC'].mean())} ppb")
+    
+    with kpi_vis:
+        container = st.container(border=True)
+        with container:
+            st.metric("~Visibility", f"{int(df_room_date['vis'].mean())}")
 
 tab_tmp, tab_hum, tab_co2, tab_voc, tab_vis = st.tabs(["Temperature", "Humidity", "CO2", "VOC", "Visibility"])
-
 with tab_tmp:
     st.markdown("### Temperature in °C")
     st.plotly_chart(utils.plot_figure(df_room_date, y_feature="tmp"))
+    st.markdown(f"## Overview of entire available temperature data for {input_device}")
+    st.plotly_chart(utils.plot_figure(df_room, y_feature="tmp", mode="markers"), use_container_width=True)
 
 with tab_hum:
     st.markdown("### Humidity in %")
     st.plotly_chart(utils.plot_figure(df_room_date, y_feature="hum"))
+    st.markdown(f"## Overview of entire available humidity data for {input_device}")
+    st.plotly_chart(utils.plot_figure(df_room, y_feature="hum", mode="markers"), use_container_width=True)
 
 with tab_co2:
     st.markdown("### CO2 in ppm")
     st.plotly_chart(utils.plot_figure(df_room_date, y_feature="CO2"))
+    st.markdown(f"## Overview of entire available CO2 data for {input_device}")
+    st.plotly_chart(utils.plot_figure(df_room, y_feature="CO2", mode="markers"), use_container_width=True)
 
 with tab_voc:
     st.markdown("### VOC in ppb")
     st.plotly_chart(utils.plot_figure(df_room_date, y_feature="VOC"))
+    st.markdown(f"## Overview of entire available VOC data for {input_device}")
+    st.plotly_chart(utils.plot_figure(df_room, y_feature="VOC", mode="markers"), use_container_width=True)
 
 with tab_vis:
     st.markdown("### Visibility? Maybe Raw Bit Format?")
     st.plotly_chart(utils.plot_figure(df_room_date, y_feature="vis"))
-
-
-st.markdown("## Overview of room data")
-st.markdown("### Full CO2 in ppm Data")
-st.plotly_chart(utils.plot_figure(df_room, y_feature="CO2", mode="markers"), use_container_width=True)
+    st.markdown(f"## Overview of entire available vis data for {input_device}")
+    st.plotly_chart(utils.plot_figure(df_room, y_feature="vis", mode="markers"), use_container_width=True)
 
 
 # Detailed data view
