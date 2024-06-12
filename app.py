@@ -37,8 +37,9 @@ df_room = pd.concat([pd.read_csv(directory + f"hka-aqm-{input_device}_{date}.dat
 df_room = utils.prepare_data_for_plot(df_room, clean_data)
 
 # create prediction values for the room
-model = utils.load_model('models/transformer_model.pth')
-scaler = utils.load_scaler('models/scaler_transformer.pth')
+model = utils.load_model('models/transformer_model_v3.pth')
+scaler = utils.load_scaler('models/scaler_transformer_v3.pth')
+print('lutsch meine eire')
 df_room_pred = utils.predict_data(model, scaler, df_room, clean_data=clean_data)
 # check if file for the selected date exists
 data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
@@ -53,7 +54,6 @@ if not data_exists:
 # df_room_date = utils.prepare_data_for_plot(df_room_date, clean_data)
 # df_room_date = df_room[df_room['date_time'] == input_date]
 df_room_date = df_room_pred[df_room_pred['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
-print(df_room_date)
 
 c1, c2 = st.columns([1, 2])
 

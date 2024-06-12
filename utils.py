@@ -11,6 +11,36 @@ from copy import deepcopy
 from models import TransformerModel
 import joblib
 
+def get_device() -> torch.device:
+    has_mps = torch.backends.mps.is_built()
+    return "mps" if has_mps else "cuda" if torch.cuda.is_available() else "cpu"
+
+def get_batch_size() -> int:
+    if get_device() == "mps":
+        return 128
+    else:
+        return 4096
+
+def save_model(model: nn.Module, model_path: str='model.pth'):
+    if os.path.isfile(model_path):
+        version = 2
+        while os.path.isfile(f"{model_path[:-4]}_v{version}.pth"):
+            version += 1
+        
+        model_path = f"{model_path[:-4]}_v{version}.pth"
+
+    torch.save(model.state_dict(), model_path)
+
+def save_scaler(scaler: StandardScaler, scaler_path: str='scaler.pkl'):
+    if os.path.isfile(scaler_path):
+        version = 2
+        while os.path.isfile(f"{scaler_path[:-4]}_v{version}.pth"):
+            version += 1
+        
+        scaler_path = f"{scaler_path[:-4]}_v{version}.pth"
+    
+    torch.save(scaler, scaler_path)
+
 def prepare_data_for_plot(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
     """
     args:   df: pd.DataFrame
@@ -80,7 +110,7 @@ def plot_available_data(df: pd.DataFrame):
 
     return fig
 
-def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=20, aggregation_level: str = 'quarter_hour') -> np.array:
+def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=20, aggregation_level: str = 'quarter_hour', batch_size: int=get_batch_size()) -> np.array:
     """
     args:   df: pd.DataFrame
             y_feature: str
@@ -127,6 +157,7 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
     df_cpy.drop(['reset', 'consecutive_data_point', 'consecutive_data_points', 'group_size'], axis=1, inplace=True)
     
     threshold_date = df_cpy.sort_values('date_time', ascending=True)['date_time'].quantile(0.8)
+    print('training data cutoff: ', threshold_date)
 
     df_train = df_cpy[df_cpy['date_time'] < threshold_date]
     df_test = df_cpy[df_cpy['date_time'] >= threshold_date]
@@ -159,14 +190,14 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
 
     # Setup data loaders for batch
     train_dataset = TensorDataset(x_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=8, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
     test_dataset = TensorDataset(x_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=8, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
-def train_transformer_model(device: torch.device, train_loader: DataLoader, test_loader: DataLoader, epochs: int=1000):
+def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000):
     model = TransformerModel().to(device)
     # Train the model
     criterion = nn.MSELoss()
@@ -177,6 +208,7 @@ def train_transformer_model(device: torch.device, train_loader: DataLoader, test
     min_val_loss = float('inf')
 
     for epoch in range(epochs):
+        print_for_epoch = False
         model.train()
         for batch in train_loader:
             x_batch, y_batch = batch
@@ -198,6 +230,10 @@ def train_transformer_model(device: torch.device, train_loader: DataLoader, test
                 outputs = model(x_batch)
                 loss = criterion(outputs, y_batch)
                 val_losses.append(loss.item())
+                if not print_for_epoch:
+                    # print the predictions vs the actual values for the first batch scaled back to original values as a dataframe
+                    print(pd.DataFrame({'actual': scaler.inverse_transform(y_batch.cpu().numpy().reshape(-1, 1)).flatten(), 'predicted': scaler.inverse_transform(outputs.cpu().numpy().reshape(-1, 1)).flatten()}))
+                    print_for_epoch = True
 
         val_loss = np.mean(val_losses)
         scheduler.step(val_loss)
@@ -215,7 +251,7 @@ def train_transformer_model(device: torch.device, train_loader: DataLoader, test
     
     return model
 
-def evaluate_transformer_model(device: torch.device, test_loader: DataLoader, model: nn.Module, scaler: StandardScaler, y_test: torch.Tensor):
+def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module, scaler: StandardScaler, y_test: torch.Tensor):
     # Evaluation
     model.eval()
     predictions = []
@@ -226,97 +262,34 @@ def evaluate_transformer_model(device: torch.device, test_loader: DataLoader, mo
             outputs = model(x_batch)
             predictions.extend(outputs.squeeze().tolist())
 
+    # print dataframe of actual vs predicted with inverse transform
+    print(pd.DataFrame({'actual': scaler.inverse_transform(y_test.cpu().numpy().reshape(-1, 1)).flatten(), 'predicted': scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()}))
+
     rmse = np.sqrt(np.mean((scaler.inverse_transform(np.array(predictions).reshape(-1, 1)) - scaler.inverse_transform(y_test.numpy().reshape(-1, 1)))**2))
     print(f"Score (RMSE): {rmse:.4f}")
 
-def get_device() -> torch.device:
-    has_mps = torch.backends.mps.is_built()
-    return "mps" if has_mps else "cuda" if torch.cuda.is_available() else "cpu"
-
 def load_model(model_path: str='model.pth', device: torch.device=get_device()) -> nn.Module:
+    print("loading:" + model_path)
     model = TransformerModel().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
 
     return model
 
 def load_scaler(scaler_path: str='scaler.pkl') -> StandardScaler:
-    scaler = torch.load('models/scaler_transformer.pth')
+    print("loading:" + scaler_path)
+    scaler = torch.load(scaler_path)
 
     return scaler
 
-def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
-    """
-    args:   device: torch.device
-            model: nn.Module
-            scaler: StandardScaler
-            df: pd.DataFrame
-            clean_data: bool
-            window_size: int
-            aggregation_level: str
-            y_feature: str
-
-    returns: pd.DataFrame
-    """
-    df_pred = get_data_for_prediction(df, clean_data, window_size, aggregation_level, y_feature)
-    print(df_pred.shape)
-    # print count of NaN in CO2_context
-    print(df_pred['CO2_context'].isna().sum())
-    valid_mask = df_pred['CO2_context'].notna()
-
-    batch_size = 4098
-    context_size = window_size
-    # Prepare the data for model input
-    contexts = np.stack(df_pred.loc[valid_mask, 'CO2_context'].values)
-    contexts_tensor = torch.tensor(contexts, dtype=torch.float32).view(-1, context_size, 1)
-
-    # Initialize a placeholder for predictions with NaN values
-    df_pred['CO2_pred'] = np.nan  # Add this column initially filled with NaN
-    predictions = np.empty((contexts_tensor.shape[0], 1))
-
-    # Make predictions
-    dbg = 0
-    model.eval()
-    with torch.no_grad():
-        print(contexts_tensor.shape)
-        for i in range(0, contexts_tensor.shape[0], batch_size):
-            if i//50000 > dbg:
-                print(f"{i} rows processed out of {contexts_tensor.shape[0]}")
-                dbg += 1
-            batch = contexts_tensor[i:i+batch_size].to(device)
-            batch_predictions = model(batch).cpu().numpy().squeeze()
-            # Scale back predictions and insert them into the correct positions
-            #df_pred.loc[valid_mask, 'CO2_pred'].iloc[i:i+batch_size] = scaler.inverse_transform(batch_predictions.reshape(-1, 1)).flatten()
-            predictions[i:i+batch_size, :] = scaler.inverse_transform(batch_predictions.reshape(-1, 1))
-    
-    df_pred.loc[valid_mask, 'CO2_pred'] = predictions.flatten()
-    print("NaN count after prediction: ", df_pred['CO2_pred'].isna().sum())
-
-    # for each row, if the cell "CO2_context" is not NaN, predict a CO2 value based on the context and save it to "CO2_pred"
-    # df_pred['CO2_pred'] = np.nan
-    # model.eval()
-    # prints = 0
-    # with torch.no_grad():
-    #     for i in range(df_pred.shape[0]):
-    #         if i%1000 == 0:
-    #             print(f"{i} rows processed out of {df_pred.shape[0]}")
-    #         if isinstance(df_pred['CO2_context'][i], np.ndarray):
-    #             if prints < 5:
-    #                 print('Predicting CO2 value for row:', i)
-    #                 prints += 1
-    #             context = torch.tensor(df_pred['CO2_context'][i], dtype=torch.float32).view(1, -1, 1).to(device)
-    #             pred = model(context).squeeze().item()
-    #             df_pred.loc[i, 'CO2_pred'] = scaler.inverse_transform(np.array(pred).reshape(-1, 1))[0][0]
-    
-    return df_pred
-
-def get_data_for_prediction(df: pd.DataFrame, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
+def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
     """
     args:   df: pd.DataFrame
             clean_data: bool
 
     returns: pd.DataFrame
     """
-    df_cpy = prepare_data_for_plot(df, clean_data)
+    #df_cpy = prepare_data_for_plot(df, clean_data)
+    df_cpy = deepcopy(df)
 
     if aggregation_level == "hour":
         df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('60T')
@@ -347,8 +320,31 @@ def get_data_for_prediction(df: pd.DataFrame, clean_data: bool=True, window_size
     df_help['consecutive_data_points'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].cumsum()
     df_help['group_size'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].transform('count')
 
+    df_help['CO2_scaled'] = scaler.transform(df_help[['CO2']])
+
     # add column that contains a list of the previous $window_size data points to df_help.
-    df_help['CO2_context'] = [df_help['CO2'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
+    df_help['CO2_context'] = [df_help['CO2_scaled'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
+    df_help['CO2_context_unscaled'] = [df_help['CO2'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
+    # df_help['CO2_context'] = [np.NaN] + [scaler.transform(df_help['CO2'].values[max(i-20, 0):i]) for i in range(1, df_help.shape[0])]
+    # df_help['CO2_context'] = [np.NaN] + [scaler.transform(df_help[['CO2']].iloc[max(i-20, 0):i]) for i in range(1, df_help.shape[0])]
+
+    # df_help['CO2_context'] = np.nan
+    # df_help['CO2_context'] = df_help['CO2_context'].astype(object)
+    # for i in range(df_help.shape[0]):
+    #     # start_idx = max(i - 20, 0)
+    #     # end_idx = i
+    #     #data_slice = df_help[['CO2']].iloc[start_idx:end_idx]  # This keeps the DataFrame structure
+
+    #     #if True:
+    #         #scaled_data = scaler.transform(data_slice)
+    #     df_help.at[i, 'CO2_context'] = df_help['CO2'].values[max(i-20, 0):i]
+    #     #else:
+    #     #    df_help.loc[i, 'CO2_context'] = np.nan
+        
+    #     # print progress every 5%
+    #     # if i % (df_help.shape[0] // 100) == 0:
+    #     #     print(f"{i} rows processed out of {df_help.shape[0]}")
+
 
     # throw out all datapoints that are not predictable
     df_help = df_help[df_help['consecutive_data_points'] >= window_size]
@@ -356,6 +352,55 @@ def get_data_for_prediction(df: pd.DataFrame, clean_data: bool=True, window_size
     # join the column "CO2_context" to df_cpy based on  date_time_rounded and device_id columns
     print("cpy: ", df_cpy.shape)
     print("help: ", df_help.shape)
-    df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', 'CO2_context']], on=['device_id', 'date_time_rounded'], how='left')
+    df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', 'CO2_context', 'CO2_context_unscaled']], on=['device_id', 'date_time_rounded'], how='left')
     print("NaN count: ", df_cpy['CO2_context'].isna().sum())
     return df_cpy
+
+def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size()) -> pd.DataFrame:
+    """
+    args:   device: torch.device
+            model: nn.Module
+            scaler: StandardScaler
+            df: pd.DataFrame
+            clean_data: bool
+            window_size: int
+            aggregation_level: str
+            y_feature: str
+
+    returns: pd.DataFrame
+    """
+    df_pred = get_data_for_prediction(df, scaler, clean_data, window_size, aggregation_level, y_feature)
+    print(df_pred)
+    print(df_pred.shape)
+    # print count of NaN in CO2_context
+    print(df_pred['CO2_context'].isna().sum())
+    valid_mask = df_pred['CO2_context'].notna()
+
+    context_size = window_size
+    # Prepare the data for model input
+    contexts = np.stack(df_pred.loc[valid_mask, 'CO2_context'].values)
+    contexts_tensor = torch.tensor(contexts, dtype=torch.float32).view(-1, context_size, 1)
+
+    # Initialize a placeholder for predictions with NaN values
+    df_pred['CO2_pred'] = np.nan  # Add this column initially filled with NaN
+    predictions = np.empty((contexts_tensor.shape[0], 1))
+
+    # Make predictions
+    dbg = 0
+    model.eval()
+    with torch.no_grad():
+        print(contexts_tensor.shape)
+        for i in range(0, contexts_tensor.shape[0], batch_size):
+            if i//50000 > dbg:
+                print(f"{i} rows processed out of {contexts_tensor.shape[0]}")
+                dbg += 1
+            batch = contexts_tensor[i:i+batch_size].to(device)
+            batch_predictions = model(batch).cpu().numpy().squeeze()
+            # Scale back predictions and insert them into the correct positions
+            #df_pred.loc[valid_mask, 'CO2_pred'].iloc[i:i+batch_size] = scaler.inverse_transform(batch_predictions.reshape(-1, 1)).flatten()
+            predictions[i:i+batch_size, :] = scaler.inverse_transform(batch_predictions.reshape(-1, 1))
+    
+    df_pred.loc[valid_mask, 'CO2_pred'] = predictions.flatten()
+    print("NaN count after prediction: ", df_pred['CO2_pred'].isna().sum())
+    
+    return df_pred
