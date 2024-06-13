@@ -19,25 +19,29 @@ def get_batch_size() -> int:
     if get_device() == "mps":
         return 128
     else:
-        return 4096
+        return 1500
 
-def save_model(model: nn.Module, model_path: str='model.pth'):
+def save_model(model: nn.Module, model_path: str=None, y_feature: str='CO2'):
+    if model_path is None:
+        model_path = f'models/transformer_model_{y_feature}_v1.pth'
     if os.path.isfile(model_path):
         version = 2
-        while os.path.isfile(f"{model_path[:-4]}_v{version}.pth"):
+        while os.path.isfile(f'models/transformer_model_{y_feature}_v{version}.pth'):
             version += 1
         
-        model_path = f"{model_path[:-4]}_v{version}.pth"
+        model_path = f'models/transformer_model_{y_feature}_v{version}.pth'
 
     torch.save(model.state_dict(), model_path)
 
-def save_scaler(scaler: StandardScaler, scaler_path: str='scaler.pkl'):
+def save_scaler(scaler: StandardScaler, scaler_path: str=None, y_feature: str='CO2'):
+    if scaler_path is None:
+        scaler_path = f'models/transformer_scaler_{y_feature}_v1.pth'
     if os.path.isfile(scaler_path):
         version = 2
-        while os.path.isfile(f"{scaler_path[:-4]}_v{version}.pth"):
+        while os.path.isfile(f'models/transformer_scaler_{y_feature}_v{version}.pth'):
             version += 1
         
-        scaler_path = f"{scaler_path[:-4]}_v{version}.pth"
+        scaler_path = f'models/transformer_scaler_{y_feature}_v{version}.pth'
     
     torch.save(scaler, scaler_path)
 
@@ -88,8 +92,8 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature], mode=mode))
     # add a trace for CO2_pred if it exists
-    if 'CO2_pred' in df.columns and 'CO2' == y_feature:
-        fig.add_trace(go.Scatter(x=df['date_time_rounded'], y=df['CO2_pred'], mode=mode, line=dict(color='red')))
+    if f'{y_feature}_pred' in df.columns:
+        fig.add_trace(go.Scatter(x=df['date_time'], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
     fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
 
     return fig
@@ -110,7 +114,7 @@ def plot_available_data(df: pd.DataFrame):
 
     return fig
 
-def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=20, aggregation_level: str = 'quarter_hour', batch_size: int=get_batch_size()) -> np.array:
+def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size: int=20, aggregation_level: str = 'quarter_hour', batch_size: int=get_batch_size(), clean_data: bool=True) -> np.array:
     """
     args:   df: pd.DataFrame
             y_feature: str
@@ -120,14 +124,14 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
     returns: np.array
     """
     # use data cleaning from prepare_data_for_plot function
-    df_cpy = prepare_data_for_plot(df)
+    df_cpy = prepare_data_for_plot(df, clean_data)
 
     if aggregation_level == "hour":
         df_cpy['date_time'] = df_cpy['date_time'].dt.round('60T')
     elif aggregation_level == "half_hour":
-        df_cpy['date_time'] = df_cpy['date_time'].dt.floor('30T')
+        df_cpy['date_time'] = df_cpy['date_time'].dt.round('30T')
     elif aggregation_level == "quarter_hour":
-        df_cpy['date_time'] = df_cpy['date_time'].dt.floor('15T')
+        df_cpy['date_time'] = df_cpy['date_time'].dt.round('15T')
     else:
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
 
@@ -166,24 +170,24 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
     scaler = StandardScaler()
 
     # Fit on training data and transform both training and test data
-    df_train['CO2_scaled'] = scaler.fit_transform(df_train[['CO2']])
-    df_test['CO2_scaled'] = scaler.transform(df_test[['CO2']])
+    df_train[f'{y_feature}_scaled'] = scaler.fit_transform(df_train[[y_feature]])
+    df_test[f'{y_feature}_scaled'] = scaler.transform(df_test[[y_feature]])
 
-    def to_sequences_2(seq_size: int, obs: pd.DataFrame):
+    def to_sequences(seq_size: int, obs: pd.DataFrame):
         x = []
         y = []
         for g_id in obs['group'].unique():
             group_df = obs[obs['group'] == g_id]
-            CO2_values = group_df['CO2_scaled'].to_numpy().reshape(-1, 1).flatten().tolist()
-            for i in range(len(CO2_values) - seq_size):
-                window = CO2_values[i:(i + seq_size)]
-                after_window = CO2_values[i + seq_size]
+            feature_values = group_df[f'{y_feature}_scaled'].to_numpy().reshape(-1, 1).flatten().tolist()
+            for i in range(len(feature_values) - seq_size):
+                window = feature_values[i:(i + seq_size)]
+                after_window = feature_values[i + seq_size]
                 x.append(window)
                 y.append(after_window)
         return torch.tensor(x, dtype=torch.float32).view(-1, seq_size, 1), torch.tensor(y, dtype=torch.float32).view(-1, 1)
 
-    x_train, y_train = to_sequences_2(window_size, df_train)
-    x_test, y_test = to_sequences_2(window_size, df_test)
+    x_train, y_train = to_sequences(window_size, df_train)
+    x_test, y_test = to_sequences(window_size, df_test)
 
     print("Training data shape:", x_train.shape, y_train.shape)
     print("Testing data shape:", x_test.shape, y_test.shape)
@@ -268,15 +272,31 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     rmse = np.sqrt(np.mean((scaler.inverse_transform(np.array(predictions).reshape(-1, 1)) - scaler.inverse_transform(y_test.numpy().reshape(-1, 1)))**2))
     print(f"Score (RMSE): {rmse:.4f}")
 
-def load_model(model_path: str='model.pth', device: torch.device=get_device()) -> nn.Module:
-    print("loading:" + model_path)
+def load_model(y_feature: str='CO2', model_path: str=None, device: torch.device=get_device()) -> nn.Module:
+    if model_path is None:
+        version = 1
+        while os.path.isfile(f"models/transformer_model_{y_feature}_v{version}.pth"):
+            version += 1
+        
+        model_path = f"models/transformer_model_{y_feature}_v{version-1}.pth"
+        print("loading latest model: " + model_path)
+    else:
+        print("loading:" + model_path)
     model = TransformerModel().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
 
     return model
 
-def load_scaler(scaler_path: str='scaler.pkl') -> StandardScaler:
-    print("loading:" + scaler_path)
+def load_scaler(y_feature: str='CO2', scaler_path: str=None) -> StandardScaler:
+    if scaler_path is None:
+        version = 1
+        while os.path.isfile(f"models/transformer_scaler_{y_feature}_v{version}.pth"):
+            version += 1
+        
+        scaler_path = f"models/transformer_scaler_{y_feature}_v{version-1}.pth"
+        print("loading latest scaler: " + scaler_path)
+    else:
+        print("loading:" + scaler_path)
     scaler = torch.load(scaler_path)
 
     return scaler
@@ -288,15 +308,14 @@ def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data
 
     returns: pd.DataFrame
     """
-    #df_cpy = prepare_data_for_plot(df, clean_data)
-    df_cpy = deepcopy(df)
+    df_cpy = prepare_data_for_plot(df, clean_data)
 
     if aggregation_level == "hour":
         df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('60T')
     elif aggregation_level == "half_hour":
-        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.floor('30T')
+        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('30T')
     elif aggregation_level == "quarter_hour":
-        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.floor('15T')
+        df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('15T')
     else:
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
 
@@ -320,40 +339,20 @@ def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data
     df_help['consecutive_data_points'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].cumsum()
     df_help['group_size'] = df_help.groupby(['device_id', 'group'])['consecutive_data_point'].transform('count')
 
-    df_help['CO2_scaled'] = scaler.transform(df_help[['CO2']])
+    df_help[f'{y_feature}_scaled'] = scaler.transform(df_help[[y_feature]])
 
     # add column that contains a list of the previous $window_size data points to df_help.
-    df_help['CO2_context'] = [df_help['CO2_scaled'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
-    df_help['CO2_context_unscaled'] = [df_help['CO2'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
-    # df_help['CO2_context'] = [np.NaN] + [scaler.transform(df_help['CO2'].values[max(i-20, 0):i]) for i in range(1, df_help.shape[0])]
-    # df_help['CO2_context'] = [np.NaN] + [scaler.transform(df_help[['CO2']].iloc[max(i-20, 0):i]) for i in range(1, df_help.shape[0])]
-
-    # df_help['CO2_context'] = np.nan
-    # df_help['CO2_context'] = df_help['CO2_context'].astype(object)
-    # for i in range(df_help.shape[0]):
-    #     # start_idx = max(i - 20, 0)
-    #     # end_idx = i
-    #     #data_slice = df_help[['CO2']].iloc[start_idx:end_idx]  # This keeps the DataFrame structure
-
-    #     #if True:
-    #         #scaled_data = scaler.transform(data_slice)
-    #     df_help.at[i, 'CO2_context'] = df_help['CO2'].values[max(i-20, 0):i]
-    #     #else:
-    #     #    df_help.loc[i, 'CO2_context'] = np.nan
-        
-    #     # print progress every 5%
-    #     # if i % (df_help.shape[0] // 100) == 0:
-    #     #     print(f"{i} rows processed out of {df_help.shape[0]}")
-
+    df_help[f'{y_feature}_context'] = [df_help[f'{y_feature}_scaled'].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
+    df_help[f'{y_feature}_context_unscaled'] = [df_help[y_feature].values[max(i-20, 0):i] for i in range(df_help.shape[0])]
 
     # throw out all datapoints that are not predictable
     df_help = df_help[df_help['consecutive_data_points'] >= window_size]
 
-    # join the column "CO2_context" to df_cpy based on  date_time_rounded and device_id columns
+    # join the column "{y_feature}_context" to df_cpy based on  date_time_rounded and device_id columns
     print("cpy: ", df_cpy.shape)
     print("help: ", df_help.shape)
-    df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', 'CO2_context', 'CO2_context_unscaled']], on=['device_id', 'date_time_rounded'], how='left')
-    print("NaN count: ", df_cpy['CO2_context'].isna().sum())
+    df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', f'{y_feature}_context', f'{y_feature}_context_unscaled']], on=['device_id', 'date_time_rounded'], how='left')
+    print("NaN count: ", df_cpy[f'{y_feature}_context'].isna().sum())
     return df_cpy
 
 def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size()) -> pd.DataFrame:
@@ -373,16 +372,16 @@ def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, dev
     print(df_pred)
     print(df_pred.shape)
     # print count of NaN in CO2_context
-    print(df_pred['CO2_context'].isna().sum())
-    valid_mask = df_pred['CO2_context'].notna()
+    print(df_pred[f'{y_feature}_context'].isna().sum())
+    valid_mask = df_pred[f'{y_feature}_context'].notna()
 
     context_size = window_size
     # Prepare the data for model input
-    contexts = np.stack(df_pred.loc[valid_mask, 'CO2_context'].values)
+    contexts = np.stack(df_pred.loc[valid_mask, f'{y_feature}_context'].values)
     contexts_tensor = torch.tensor(contexts, dtype=torch.float32).view(-1, context_size, 1)
 
     # Initialize a placeholder for predictions with NaN values
-    df_pred['CO2_pred'] = np.nan  # Add this column initially filled with NaN
+    df_pred[f'{y_feature}_pred'] = np.nan  # Add this column initially filled with NaN
     predictions = np.empty((contexts_tensor.shape[0], 1))
 
     # Make predictions
@@ -400,7 +399,30 @@ def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, dev
             #df_pred.loc[valid_mask, 'CO2_pred'].iloc[i:i+batch_size] = scaler.inverse_transform(batch_predictions.reshape(-1, 1)).flatten()
             predictions[i:i+batch_size, :] = scaler.inverse_transform(batch_predictions.reshape(-1, 1))
     
-    df_pred.loc[valid_mask, 'CO2_pred'] = predictions.flatten()
-    print("NaN count after prediction: ", df_pred['CO2_pred'].isna().sum())
+    df_pred.loc[valid_mask, f'{y_feature}_pred'] = predictions.flatten()
+    print("NaN count after prediction: ", df_pred[f'{y_feature}_pred'].isna().sum())
     
     return df_pred
+
+def create_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device() ,window_size: int=20, epochs: int=1000, clean_data: bool=True):
+    """
+    args:   df: pd.DataFrame
+            y_feature: str
+            aggregation_level: str
+            window_size: int
+            epochs: int
+            clean_data: bool
+
+    returns: nn.Module, StandardScaler
+    """
+    # Prepare the data for the model
+    train_dataset, test_dataset, train_loader, test_loader, scaler, y_test = get_data_for_transformer(df, y_feature, window_size, aggregation_level, clean_data=clean_data)
+    # Train the model
+    model = train_transformer_model(device, train_loader, test_loader, scaler, epochs)
+    # Evaluate the model
+    evaluate_transformer_model(device, test_loader, model, scaler, y_test)
+    # Save the model and the scaler
+    save_model(model, y_feature=y_feature)
+    save_scaler(scaler, y_feature=y_feature)
+
+    return model, scaler

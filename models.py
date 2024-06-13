@@ -25,7 +25,7 @@ class PositionalEncoding(nn.Module):
     
 # Model definition using Transformer
 class TransformerModel(nn.Module):
-    def __init__(self, input_dim=1, d_model=8, nhead=4, num_layers=2, dropout=0.2):
+    def __init__(self, input_dim=1, d_model=64, nhead=4, num_layers=2, dropout=0.25):
         super(TransformerModel, self).__init__()
 
         self.encoder = nn.Linear(input_dim, d_model)
