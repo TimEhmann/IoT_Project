@@ -34,11 +34,17 @@ input_date = st.sidebar.date_input(label= "Select Date", value= min_date, min_va
 feature_data = st.sidebar.selectbox(label= "Feature", options= ["Temperature", "Humidity", "CO2", "VOC", "Visibility"])
 feature_name_to_feature = {"Temperature": "tmp", "Humidity": "hum", "CO2": "CO2", "VOC": "VOC", "Visibility": "vis"}
 selected_feature = feature_name_to_feature[feature_data]
+aggregation_level_selection = st.sidebar.selectbox(label= "Aggregation Level", options= ["60min", "30min", "15min"])
+aggregation_level_selection_to_aggregation_level = {"60min": 'hour', "30min": 'half_hour', "15min": 'quarter_hour'}
+frequency = aggregation_level_selection.replace('min', 'T')
+aggregation_level = aggregation_level_selection_to_aggregation_level[aggregation_level_selection]
 clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
+# button to increase and decrese value of points_to_forecast
+points_to_forecast = st.sidebar.number_input(label= "Points to Forecast", value= 1, min_value= 1, max_value= 10, step= 1)
 
 # Room data for the selected room
 df_room = pd.concat([pd.read_csv(directory + f"hka-aqm-{input_device}_{date}.dat", skiprows=1, sep=';', engine='python') for date in available_dates_per_room[input_device]])
-df_room = utils.clean_data(df_room, clean_data)
+df_room = utils.clean_df(df_room, clean_data)
 
 # check if file for the selected date exists
 data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
@@ -50,6 +56,7 @@ if not data_exists:
     st.stop()
 
 df_room_date = df_room[df_room['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
+df_room_date['date_time_rounded'] = df_room_date['date_time'].dt.round(frequency)
 print(df_room_date)
 
 c1, c2 = st.columns([1, 2])
@@ -90,13 +97,17 @@ with c2:
             st.metric("~Visibility", f"{int(df_room_date['vis'].mean())}")
 
 device = utils.get_device()
-model = utils.load_model(selected_feature, device=device)
-scaler = utils.load_scaler(selected_feature)
-df_room_pred = utils.predict_data(model, scaler, df_room, device, y_feature=selected_feature)
-df_room_date_pred = df_room_pred[df_room_pred['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
+#model = utils.load_model(selected_feature, device=device)
+#scaler = utils.load_scaler(selected_feature)
+#df_room_pred = utils.predict_data(model, scaler, df_room, device, y_feature=selected_feature)
+#df_room_date_pred = df_room_pred[df_room_pred['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
+df_room_date_pred = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast)
+# merge with df_room_date on 'date_time_rounded'
+df_for_plot = pd.merge(df_room_date, df_room_date_pred, on='date_time_rounded', how='left', suffixes=('', '_pred'))
+print(df_for_plot.columns)
 
 st.markdown("## Detailed Data View")
-st.plotly_chart(utils.plot_figure(df_room_date_pred, y_feature=selected_feature), use_container_width=True)
+st.plotly_chart(utils.plot_figure(df_for_plot, y_feature=selected_feature), use_container_width=True)
 st.markdown(f"## Overview of entire available {feature_data} data for {input_device}")
 st.plotly_chart(utils.plot_figure(df_room, y_feature=selected_feature, mode="markers"), use_container_width=True)
 

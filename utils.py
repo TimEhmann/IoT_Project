@@ -13,6 +13,7 @@ import joblib
 import pickle
 import holidays
 from datetime import date, timedelta
+import datetime
 import torch.optim as optim
 
 def get_device() -> torch.device:
@@ -140,6 +141,7 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     """
     feature_title_dictionary = {
         'date_time': 'Time',
+        'date_time_rounded': 'Time',
         'tmp': 'Temperature in °C',
         'hum': 'Humidity in %',
         'CO2': 'CO2 in ppm',
@@ -151,8 +153,9 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature], mode=mode))
     # add a trace for CO2_pred if it exists
+    x_feature_pred = 'date_time_rounded' if 'date_time_rounded' in df.columns else 'date_time'
     if f'{y_feature}_pred' in df.columns:
-        fig.add_trace(go.Scatter(x=df['date_time'], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
+        fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
     fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
 
     return fig
@@ -468,6 +471,9 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
             predictions.extend(predicted_batch_unscaled)
             actual.extend(actual_batch_unscaled)
 
+    predictions = np.array(predictions)
+    actual = np.array(actual)
+
     # print dataframe of actual vs predicted with inverse transform
     print(pd.DataFrame({'actual': actual, 'predicted': predictions}))
     
@@ -480,7 +486,7 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     print(f"Score (MAPE): {mape:.4f}%")
     return rmse, mae, mape
 
-def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1) -> nn.Module:
+def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1, d_model: int=128, nhead: int=4, num_layers: int=4, dropout: float=0.1) -> nn.Module:
     if model_path is None:
         version = 1
         while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
@@ -490,7 +496,7 @@ def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_pat
         print("loading latest model: " + model_path)
     else:
         print("loading:" + model_path)
-    model = TransformerModel(input_dim=input_dim).to(device)
+    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout=dropout).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
 
     return model
@@ -513,13 +519,13 @@ def load_columns(file_path: str) -> list:
     with open(file_path, 'rb') as f:
         return pickle.load(f)
 
-def load_dataframe(file_path: str, dataframe_name: str=None) -> pd.DataFrame:
+def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
     if file_path is None:
         version = 1
-        while os.path.isfile(f'data/{dataframe_name}_v{version}.csv'):
+        while os.path.isfile(f'data/{model_name}_dataframe_v{version}.csv'):
             version += 1
         
-        file_path = f'data/{dataframe_name}_dataframe_v{version-1}.csv'
+        file_path = f'data/{model_name}_dataframe_v{version-1}.csv'
     
     return pd.read_csv(file_path)
 
@@ -949,6 +955,19 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
 
     return model, scaler, rmse, mae, mape
 
+def fill_data_for_prediction(df: pd.DataFrame):
+    """
+    args:   df: pd.DataFrame
+
+    returns: pd.DataFrame
+    """
+    # Fill missing values by interpolation except date_time_rounded
+    df[[col for col in df.columns if col != 'date_time_rounded']] = df[[col for col in df.columns if col != 'date_time_rounded']].interpolate(method='linear', axis=0)
+    
+    df = df.fillna(method='bfill')
+    df = df.fillna(method='ffill')
+    return df
+
 def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None) -> pd.DataFrame:
     """
     args:   model_name: str
@@ -957,7 +976,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
             device: torch.device
             clean_data: bool
             window_size: int
-            aggregation_level: str
+            aggregation_level: str, one of "hour", "half_hour", "quarter_hour"
             y_feature: str
             batch_size: int
             start_time: np.datetime64
@@ -970,10 +989,10 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
 
     df = load_dataframe(model_name=full_model_name)
     scaler = load_scaler(model_name=full_model_name)
-    model = load_transformer_model(model_name=full_model_name, y_feature=y_feature, device=device, input_dim=df.shape[1])
+    model = load_transformer_model(model_name=full_model_name, y_feature=y_feature, device=device, input_dim=df.shape[1]-1)
 
-
-    df = df[df[f'device_id_{selected_room}'] == 1]
+    df = df[df[f'device_id_hka-aqm-{selected_room}'] == 1]
+    df['date_time_rounded'] = pd.to_datetime(df['date_time_rounded'])
 
     # create a series of <window_size> time points before the start_time. Depending on the aggregation_level, the time points are rounded to the nearest hour, half hour, or quarter hour.
     if start_time is None:
@@ -988,11 +1007,69 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     else:
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
     
-    start_time = pd.to_datetime(start_time).dt.round(freq)
+    start_time = pd.to_datetime(start_time).round(freq)
+    date_midnight = pd.to_datetime(start_time.date())
+    print("start_time: ", start_time)
+    print("date_midnight: ", date_midnight)
 
-    # select the <window_size> time points of the df before the start_time and after start_time - <window_size> * freq
-    earliest_datapoint_in_window = start_time - window_size * pd.to_timedelta(freq)
-    df = df[(df['date_time_rounded'] < start_time)].tail(window_size)
+    df_context = df[(df['date_time_rounded'] < date_midnight)].tail(window_size)
+    df_date = df[(df['date_time_rounded'].dt.date == start_time.date())]
+    df = pd.concat([df_context, df_date], ignore_index=True)
+    #df = df[(df['date_time_rounded'] < start_time)].tail(window_size)
+
+    #required_timestamps = pd.date_range(end=start_time, periods=window_size+1, freq=freq, closed='left')
+    # timestamps from date_midnight - window_size * freq to date_midnight+1day
+    required_timestamps = pd.date_range(start=date_midnight - window_size * pd.to_timedelta(freq), end=date_midnight + pd.to_timedelta(1, unit='D'), freq=freq, closed='left')
+
+    # Create a dataframe from these timestamps
+    df_timestamps = pd.DataFrame(required_timestamps, columns=['date_time_rounded'])
+    
+    # Create a dataframe to save predictions in. Columns are date_time_rounded and y_feature
+    prediction_timestamps = pd.date_range(start=date_midnight, end=date_midnight + pd.to_timedelta(1, unit='D'), freq=freq, closed='left')
+    df_predictions = pd.DataFrame({'date_time_rounded': prediction_timestamps, f'{y_feature}_pred': np.nan})
+
+
+    # Perform a left join to find missing timestamps in the original dataframe
+    result_df = df_timestamps.merge(df, on='date_time_rounded', how='left')
+
+    # check if result_df has nan values
+    if result_df.isnull().values.any():
+        result_df = fill_data_for_prediction(result_df)
+    if result_df.isnull().values.any():
+        raise ValueError("There are still NaN values in the dataframe.")
+    
+    columns_to_scale = [col for col in result_df.columns if col != 'date_time_rounded']
+    y_feature_scaler_index = columns_to_scale.index('CO2')
+    model.eval()
+    with torch.no_grad():
+        # create rolling window of 20 datepoints everytime over result_df
+        for j in range(result_df.shape[0] - window_size):
+            df_subset = result_df.iloc[j:j+window_size]
+            for i in range(prediction_count):
+                df_input = df_subset.tail(20).drop(['date_time_rounded'], axis=1).values
+                df_input = scaler.transform(df_input)
+                input_data = torch.tensor(df_input, dtype=torch.float32).view(-1, window_size, df_input.shape[1])
+                prediction = model(input_data.to(device))
+                prediction = prediction.cpu().numpy().reshape(-1, 1)
+                zeroes_for_scaler = np.zeros((prediction.shape[0], len(columns_to_scale)))
+
+                zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert CO2 values into the correct column
+                inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
+                predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(0)
+                new_timestamp = df_subset['date_time_rounded'].max() + pd.to_timedelta(freq)
+                new_row = pd.DataFrame({
+                    'date_time_rounded': new_timestamp,
+                    'CO2': predicted_unscaled
+                    # Add other columns here if necessary, filling with NaN or default values
+                })
+                # add output in a new row of the y_feature column of result_df and remove first line
+                df_subset = pd.concat([df_subset, new_row], ignore_index=True)
+                df_subset.fillna(method='ffill', inplace=True)
+                # add output to df_predictions at the correct timestamp
+                if i == prediction_count-1:
+                    df_predictions.loc[df_predictions['date_time_rounded'] == new_timestamp, f'{y_feature}_pred'] = predicted_unscaled
+    
+    return df_predictions
 
 
 
