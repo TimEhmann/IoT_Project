@@ -64,46 +64,38 @@ def get_list_of_special_dates():
 
 def save_model(model: nn.Module, model_name: str=None, model_path: str=None, y_feature: str='CO2'):
     if model_path is None:
-        model_path = f'models/{model_name}_model_{y_feature}_v1.pth'
-    if os.path.isfile(model_path):
-        version = 2
-        while os.path.isfile(f'models/{model_name}_model_{y_feature}_v{version}.pth'):
+        version = 1
+        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
             version += 1
         
-        model_path = f'models/{model_name}_model_{y_feature}_v{version}.pth'
+        model_path = f'models/{model_name}_{y_feature}_model_v{version}.pth'
 
     torch.save(model.state_dict(), model_path)
 
 def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, y_feature: str='CO2'):
     if scaler_path is None:
-        scaler_path = f'models/{model_name}_scaler_{y_feature}_v1.pth'
-    if os.path.isfile(scaler_path):
-        version = 2
-        while os.path.isfile(f'models/{model_name}_scaler_{y_feature}_v{version}.pth'):
+        version = 1
+        while os.path.isfile(f'models/{model_name}_{y_feature}_scaler_v{version}.pth'):
             version += 1
         
-        scaler_path = f'models/{model_name}_scaler_{y_feature}_v{version}.pth'
+        scaler_path = f'models/{model_name}_{y_feature}_scaler_v{version}.pth'
     
     torch.save(scaler, scaler_path)
 
 def save_columns(df: pd.DataFrame, model_name: str=None, file_path: str=None, y_feature: str='CO2'):
     if file_path is None:
-        file_path = f'models/{model_name}_columns_{y_feature}_v1.pkl'
-    if os.path.isfile(file_path):
-        version = 2
-        while os.path.isfile(f'models/{model_name}_columns_{y_feature}_v{version}.pkl'):
+        version = 1
+        while os.path.isfile(f'models/{model_name}_{y_feature}_columns_v{version}.pkl'):
             version += 1
         
-        file_path = f'models/{model_name}_columns_{y_feature}_v{version}.csv'
+        file_path = f'models/{model_name}_{y_feature}_columns_v{version}.csv'
     
     with open(file_path, 'wb') as f:
         pickle.dump(df.columns.tolist(), f)
 
 def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
     if file_path is None:
-        file_path = f'data/{model_name}_dataframe_v1.csv'
-    if os.path.isfile(file_path):
-        version = 2
+        version = 1
         while os.path.isfile(f'data/{model_name}_dataframe_v{version}.csv'):
             version += 1
         
@@ -445,30 +437,56 @@ def train_fcn_model(device, train_loader: DataLoader, test_loader: DataLoader, s
     
     return model
 
-def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module, scaler: StandardScaler, y_test: torch.Tensor):
+def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module, scaler: StandardScaler, y_test: torch.Tensor, y_feature_scaler_index: int=0, input_dim: int=1):
+    '''kind of pointless function, because its almost the exact same thing that happens after each epoch.
+    But it can be used to evaluate a model at a later point again'''
+    if input_dim == None:
+        input_dim = test_loader.dataset.tensors[0].shape[-1]
     # Evaluation
     model.eval()
     predictions = []
+    actual = []
+    
     with torch.no_grad():
         for batch in test_loader:
             x_batch, y_batch = batch
-            x_batch = x_batch.to(device)
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             outputs = model(x_batch)
-            predictions.extend(outputs.squeeze().tolist())
+            # Reshape and inverse transform only the 'CO2' outputs using the specific index
+            actual_batch = y_batch.cpu().numpy().reshape(-1, 1)
+            predicted_batch = outputs.cpu().numpy().reshape(-1, 1)
+            zeroes_for_scaler = np.zeros((actual_batch.shape[0], input_dim))
+            
+            zeroes_for_scaler[:, y_feature_scaler_index] = actual_batch.flatten()  # Insert CO2 values into the correct column
+            inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
+            actual_batch_unscaled = inverse_transformed[:, y_feature_scaler_index]
+
+            zeroes_for_scaler[:, y_feature_scaler_index] = predicted_batch.flatten()  # Insert CO2 values into the correct column
+            inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
+            predicted_batch_unscaled = inverse_transformed[:, y_feature_scaler_index]
+
+            predictions.extend(predicted_batch_unscaled)
+            actual.extend(actual_batch_unscaled)
 
     # print dataframe of actual vs predicted with inverse transform
-    print(pd.DataFrame({'actual': scaler.inverse_transform(y_test.cpu().numpy().reshape(-1, 1)).flatten(), 'predicted': scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()}))
-
-    rmse = np.sqrt(np.mean((scaler.inverse_transform(np.array(predictions).reshape(-1, 1)) - scaler.inverse_transform(y_test.numpy().reshape(-1, 1)))**2))
+    print(pd.DataFrame({'actual': actual, 'predicted': predictions}))
+    
+    # print multiple accuracy messurements
+    rmse = np.sqrt(np.mean((actual - predictions)**2))
     print(f"Score (RMSE): {rmse:.4f}")
+    mae = np.mean(np.abs(actual - predictions))
+    print(f"Score (MAE): {mae:.4f}")
+    mape = np.mean(np.abs((actual - predictions) / actual)) * 100
+    print(f"Score (MAPE): {mape:.4f}%")
+    return rmse, mae, mape
 
 def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1) -> nn.Module:
     if model_path is None:
         version = 1
-        while os.path.isfile(f"models/{model_name}_{y_feature}_v{version}.pth"):
+        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
             version += 1
         
-        model_path = f"models/{model_name}_{y_feature}_v{version-1}.pth"
+        model_path = f"models/{model_name}_{y_feature}_model_v{version-1}.pth"
         print("loading latest model: " + model_path)
     else:
         print("loading:" + model_path)
@@ -477,13 +495,13 @@ def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_pat
 
     return model
 
-def load_scaler(y_feature: str='CO2', scaler_name: str=None, scaler_path: str=None) -> StandardScaler:
+def load_scaler(y_feature: str='CO2', model_name: str=None, scaler_path: str=None) -> StandardScaler:
     if scaler_path is None:
         version = 1
-        while os.path.isfile(f"models/{scaler_name}_{y_feature}_v{version}.pth"):
+        while os.path.isfile(f"models/{model_name}_{y_feature}_scaler_v{version}.pth"):
             version += 1
         
-        scaler_path = f"models/{scaler_name}_{y_feature}_v{version-1}.pth"
+        scaler_path = f"models/{model_name}_{y_feature}_scaler_v{version-1}.pth"
         print("loading latest scaler: " + scaler_path)
     else:
         print("loading:" + scaler_path)
@@ -501,7 +519,7 @@ def load_dataframe(file_path: str, dataframe_name: str=None) -> pd.DataFrame:
         while os.path.isfile(f'data/{dataframe_name}_v{version}.csv'):
             version += 1
         
-        file_path = f'data/{dataframe_name}_v{version-1}.csv'
+        file_path = f'data/{dataframe_name}_dataframe_v{version-1}.csv'
     
     return pd.read_csv(file_path)
 
@@ -845,9 +863,6 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     df_test[columns_to_scale] = scaler.transform(df_test[columns_to_scale])
     y_feature_scaler_index = columns_to_scale.index('CO2')
 
-    # in the full_preprocessed_df, date_time_rounded should still exist
-    full_preprocessed_df = pd.concat([df_train, df_test])
-
     # drop unconvertible columns
     df_train.drop(['date_time_rounded'], axis=1, inplace=True)
     df_test.drop(['date_time_rounded'], axis=1, inplace=True)
@@ -882,7 +897,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
-    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df, y_feature_scaler_index
+    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, df_cpy, y_feature_scaler_index
 
 def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device() ,window_size: int=5, epochs: int=1000, clean_data: bool=True, drop_columns: list=[]):
     """
@@ -919,20 +934,22 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
     returns: nn.Module, StandardScaler
     """
     # Prepare the data for the model
-    train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df, y_feature_scaler_index = get_data_for_multivarate_sequential_forecast(df, y_feature, window_size, aggregation_level, clean_data=clean_data, batch_size=batch_size, drop_columns=drop_columns)
-    save_dataframe(full_preprocessed_df, model_name='transformer_multivariate')
+    train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index = get_data_for_multivarate_sequential_forecast(df, y_feature, window_size, aggregation_level, clean_data=clean_data, batch_size=batch_size, drop_columns=drop_columns)
+    save_dataframe(full_preprocessed_df_unscaled, model_name=f'transformer_multivariate_{aggregation_level}')
     # Train the model
     model = train_transformer_model(device, train_loader, test_loader, scaler, epochs, input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout=dropout, learning_rate=learning_rate, y_feature_scaler_index=y_feature_scaler_index)
+    
+    # Save the model, scaler and used columns
+    save_model(model, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
+    save_scaler(scaler, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
+    save_columns(full_preprocessed_df_unscaled, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
+
     # Evaluate the model
-    evaluate_transformer_model(device, test_loader, model, scaler, y_test)
-    # Save the model and the scaler
-    save_model(model, y_feature=y_feature, model_name='transformer_multivariate')
-    save_scaler(scaler, y_feature=y_feature, model_name='transformer_multivariate')
-    save_columns(full_preprocessed_df, y_feature=y_feature, model_name='transformer_multivariate')
+    rmse, mae, mape = evaluate_transformer_model(device, test_loader, model, scaler, y_test, y_feature_scaler_index=y_feature_scaler_index, input_dim=input_dim)
 
-    return model, scaler
+    return model, scaler, rmse, mae, mape
 
-def predict_data_multivariate_transformer(model_name: str='transformer_model_multivariate', scaler_name: str='transformer_scaler_multivariate', dataframe_name: str='transformer_dataframe_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None) -> pd.DataFrame:
+def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None) -> pd.DataFrame:
     """
     args:   model_name: str
             scaler_name: str
@@ -949,9 +966,11 @@ def predict_data_multivariate_transformer(model_name: str='transformer_model_mul
     returns: pd.DataFrame
     """
 
-    df = load_dataframe(dataframe_name)
-    scaler = load_scaler(scaler_name)
-    model = load_transformer_model(model_name, y_feature=y_feature, device=device, input_dim=df.shape[1])
+    full_model_name = model_name + '_' + aggregation_level
+
+    df = load_dataframe(model_name=full_model_name)
+    scaler = load_scaler(model_name=full_model_name)
+    model = load_transformer_model(model_name=full_model_name, y_feature=y_feature, device=device, input_dim=df.shape[1])
 
 
     df = df[df[f'device_id_{selected_room}'] == 1]
