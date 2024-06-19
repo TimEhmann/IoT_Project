@@ -31,14 +31,14 @@ available_dates_per_room[input_device].sort()
 min_date = datetime.strptime(available_dates_per_room[input_device][0], "%Y_%m_%d")
 max_date = datetime.strptime(available_dates_per_room[input_device][-1], "%Y_%m_%d")
 input_date = st.sidebar.date_input(label= "Select Date", value= min_date, min_value= min_date, max_value= max_date)
-clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
 feature_data = st.sidebar.selectbox(label= "Feature", options= ["Temperature", "Humidity", "CO2", "VOC", "Visibility"])
 feature_name_to_feature = {"Temperature": "tmp", "Humidity": "hum", "CO2": "CO2", "VOC": "VOC", "Visibility": "vis"}
 selected_feature = feature_name_to_feature[feature_data]
+clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
 
 # Room data for the selected room
 df_room = pd.concat([pd.read_csv(directory + f"hka-aqm-{input_device}_{date}.dat", skiprows=1, sep=';', engine='python') for date in available_dates_per_room[input_device]])
-df_room = utils.prepare_data_for_plot(df_room, clean_data)
+df_room = utils.clean_data(df_room, clean_data)
 
 # check if file for the selected date exists
 data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
