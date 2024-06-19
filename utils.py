@@ -99,6 +99,13 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
         version = 1
         while os.path.isfile(f'data/{model_name}_dataframe_v{version}.csv'):
             version += 1
+
+        # check if newest saved dataframe is equal to the one thats about to be saved
+        if version > 1:
+            latest_dataframe = pd.read_csv(f'data/{model_name}_dataframe_v{version-1}.csv')
+            if df.equals(latest_dataframe):
+                print("Dataframe is already saved.")
+                return
         
         file_path = f'data/{model_name}_dataframe_v{version}.csv'
     
@@ -300,16 +307,16 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
                 loss = criterion(outputs, y_batch)
                 val_losses.append(loss.item())
                 if not print_for_epoch:
-                    # Reshape and inverse transform only the 'CO2' outputs using the specific index
+                    # Reshape and inverse transform only the 'y_feature' outputs using the specific index
                     actual = y_batch.cpu().numpy().reshape(-1, 1)
                     predicted = outputs.cpu().numpy().reshape(-1, 1)
                     zeroes_for_scaler = np.zeros((actual.shape[0], input_dim))
                     
-                    zeroes_for_scaler[:, y_feature_scaler_index] = actual.flatten()  # Insert CO2 values into the correct column
+                    zeroes_for_scaler[:, y_feature_scaler_index] = actual.flatten()  # Insert actual values into the correct column
                     inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
                     actual_unscaled = inverse_transformed[:, y_feature_scaler_index]
 
-                    zeroes_for_scaler[:, y_feature_scaler_index] = predicted.flatten()  # Insert CO2 values into the correct column
+                    zeroes_for_scaler[:, y_feature_scaler_index] = predicted.flatten()  # Insert predicted values into the correct column
                     inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
                     predicted_unscaled = inverse_transformed[:, y_feature_scaler_index]
 
@@ -455,16 +462,16 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
             x_batch, y_batch = batch
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             outputs = model(x_batch)
-            # Reshape and inverse transform only the 'CO2' outputs using the specific index
+            # Reshape and inverse transform only the 'y_feature' outputs using the specific index
             actual_batch = y_batch.cpu().numpy().reshape(-1, 1)
             predicted_batch = outputs.cpu().numpy().reshape(-1, 1)
             zeroes_for_scaler = np.zeros((actual_batch.shape[0], input_dim))
             
-            zeroes_for_scaler[:, y_feature_scaler_index] = actual_batch.flatten()  # Insert CO2 values into the correct column
+            zeroes_for_scaler[:, y_feature_scaler_index] = actual_batch.flatten()  # Insert actual values into the correct column
             inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
             actual_batch_unscaled = inverse_transformed[:, y_feature_scaler_index]
 
-            zeroes_for_scaler[:, y_feature_scaler_index] = predicted_batch.flatten()  # Insert CO2 values into the correct column
+            zeroes_for_scaler[:, y_feature_scaler_index] = predicted_batch.flatten()  # Insert predicted values into the correct column
             inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
             predicted_batch_unscaled = inverse_transformed[:, y_feature_scaler_index]
 
@@ -599,7 +606,7 @@ def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, dev
     df_pred = get_data_for_prediction(df, scaler, clean_data, window_size, aggregation_level, y_feature)
     print(df_pred)
     print(df_pred.shape)
-    # print count of NaN in CO2_context
+    # print count of NaN in 'y_feature'_context
     print(df_pred[f'{y_feature}_context'].isna().sum())
     valid_mask = df_pred[f'{y_feature}_context'].notna()
 
@@ -737,7 +744,7 @@ def get_data_for_multivariate_forecast(df: pd.DataFrame, y_feature: str='CO2', w
         if '_next' in column and y_feature not in column:
             df_cpy.drop(column, axis=1, inplace=True)
 
-    # drop all rows where CO2_next is NaN
+    # drop all rows where 'y_feature'_next is NaN
     df_cpy.dropna(subset=[f'{y_feature}_next'], inplace=True)
 
     # Create the scaler instance
@@ -867,7 +874,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     # Fit on training data and transform both training and test data
     df_train[columns_to_scale] = scaler.fit_transform(df_train[columns_to_scale])
     df_test[columns_to_scale] = scaler.transform(df_test[columns_to_scale])
-    y_feature_scaler_index = columns_to_scale.index('CO2')
+    y_feature_scaler_index = columns_to_scale.index(y_feature)
 
     # drop unconvertible columns
     df_train.drop(['date_time_rounded'], axis=1, inplace=True)
@@ -1039,7 +1046,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
         raise ValueError("There are still NaN values in the dataframe.")
     
     columns_to_scale = [col for col in result_df.columns if col != 'date_time_rounded']
-    y_feature_scaler_index = columns_to_scale.index('CO2')
+    y_feature_scaler_index = columns_to_scale.index(y_feature)
     model.eval()
     with torch.no_grad():
         # create rolling window of 20 datepoints everytime over result_df
@@ -1053,13 +1060,13 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
                 prediction = prediction.cpu().numpy().reshape(-1, 1)
                 zeroes_for_scaler = np.zeros((prediction.shape[0], len(columns_to_scale)))
 
-                zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert CO2 values into the correct column
+                zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert predicted values into the correct column
                 inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
                 predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(0)
                 new_timestamp = df_subset['date_time_rounded'].max() + pd.to_timedelta(freq)
                 new_row = pd.DataFrame({
                     'date_time_rounded': new_timestamp,
-                    'CO2': predicted_unscaled
+                    y_feature: predicted_unscaled
                     # Add other columns here if necessary, filling with NaN or default values
                 })
                 # add output in a new row of the y_feature column of result_df and remove first line
