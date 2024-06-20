@@ -119,7 +119,7 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
 
         # check if newest saved dataframe is equal to the one thats about to be saved
         if version > 1:
-            latest_dataframe = pd.read_csv(f'data/{model_name}_dataframe_v{version-1}.csv')
+            latest_dataframe = pd.read_parquet(f'data/{model_name}_dataframe_v{version-1}.parquet')
             latest_dataframe['date_time_rounded'] = pd.to_datetime(latest_dataframe['date_time_rounded'])
             latest_dataframe['group'] = latest_dataframe['group'].astype('int32')
             for col in latest_dataframe.select_dtypes(include=['int64']).columns:
