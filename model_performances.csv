@@ -1,1 +1,2 @@
-model_name, aggregation_level, y_feature, d_model, nhead, num_layers, dropout, batch_size, learning_rate, epochs, rmse, mae, mape, note
+model_name,aggregation_level,y_feature,rmse,mae,mape,d_model,nhead,num_layers,dropout_pe,dropout_encoder,batch_size,learning_rate,epochs,train_loss,val_loss,note
+multivariate_transformer,quarter_hour,CO2,39.596952718638526,30.778332316813383,6.852159798936188,256.0,8.0,5.0,0.1,0.1,1024.0,0.00031,25.0,0.1635,0.1635,2 decoder Linear layers with LeakyReLu

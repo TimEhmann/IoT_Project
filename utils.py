@@ -114,10 +114,10 @@ def get_different_rows(source_df, new_df):
     return changed_rows_df.drop('_merge', axis=1)
 
 
-def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
+def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None, overwrite: bool=False):
     if file_path is None:
         version = 1
-        while os.path.isfile(f'data/{model_name}_dataframe_v{version}.csv'):
+        while os.path.isfile(f'data/{model_name}_dataframe_v{version}.parquet'):
             version += 1
 
         # check if newest saved dataframe is equal to the one thats about to be saved
@@ -125,26 +125,35 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
             latest_dataframe = pd.read_parquet(f'data/{model_name}_dataframe_v{version-1}.parquet')
             latest_dataframe['date_time_rounded'] = pd.to_datetime(latest_dataframe['date_time_rounded'])
             latest_dataframe['group'] = latest_dataframe['group'].astype('int32')
+
             for col in latest_dataframe.select_dtypes(include=['int64']).columns:
                 latest_dataframe[col] = latest_dataframe[col].astype('uint8')
-            # check if columns are the same
+            
             if latest_dataframe.columns.equals(df.columns):
                 print("same columns")
             else:
                 print(latest_dataframe.columns)
                 print(df.columns)
+            
+            if latest_dataframe.dtypes.equals(df.dtypes):
+                print("same dtypes")
+            else:
+                print(latest_dataframe.dtypes)
+                print(df.dtypes)
+            
             if df.drop(columns=['hour_sin']).equals(latest_dataframe.drop(columns=['hour_sin'])):
                 print("Dataframe is already saved.")
                 return
             else:
-                print(latest_dataframe.dtypes)
-                print(df.dtypes)
                 difs = get_different_rows(latest_dataframe, df)
-                print(difs)
+                print(len(difs), " rows differ from the last saved dataframe.")
         
-        file_path = f'data/{model_name}_dataframe_v{version}.csv'
+            if overwrite:
+                version -= 1
+        
+        file_path = f'data/{model_name}_dataframe_v{version}.parquet'
     
-    df.to_csv(file_path, index=False)
+    df.to_parquet(file_path, index=False)
 
 def clean_df(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
     """
@@ -306,13 +315,13 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
-def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0):
+def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0):
     if input_dim == None:
         input_dim = train_loader.dataset.tensors[0].shape[-1]
-    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout=dropout).to(device)
+    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder).to(device)
     # Train the model
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
 
     early_stop_count = 0
@@ -378,7 +387,7 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {train_loss:.4f}")  # Print the average training loss
         print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss:.4f}")
     
-    return model
+    return model, train_loss, val_loss
 
 def train_multivariate_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000):
     model = LSTMModel(input_dim=next(iter(train_loader))[0].shape[-1], hidden_dim=100, num_layers=1, output_dim=1).to(device)
@@ -533,7 +542,7 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     print(f"Score (MAPE): {mape:.4f}%")
     return rmse, mae, mape
 
-def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1, d_model: int=128, nhead: int=4, num_layers: int=4, dropout: float=0.1) -> nn.Module:
+def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1, d_model: int=128, nhead: int=4, num_layers: int=4, dropout_pe: float=0.25, dropout_encoder: float=0.25) -> nn.Module:
     if model_path is None:
         version = 1
         while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
@@ -543,7 +552,7 @@ def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_pat
         print("loading latest model: " + model_path)
     else:
         print("loading:" + model_path)
-    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout=dropout).to(device)
+    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
 
     return model
@@ -693,7 +702,7 @@ def create_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2',
     # Prepare the data for the model
     train_dataset, test_dataset, train_loader, test_loader, scaler, y_test = get_data_for_transformer(df, y_feature, window_size, aggregation_level, clean_data=clean_data)
     # Train the model
-    model = train_transformer_model(device, train_loader, test_loader, scaler, epochs)
+    model, train_loss, val_loss = train_transformer_model(device, train_loader, test_loader, scaler, epochs)
     # Evaluate the model
     evaluate_transformer_model(device, test_loader, model, scaler, y_test)
     # Save the model and the scaler
@@ -934,7 +943,6 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
                 x.append(window.values)
                 y.append(after_window)
         feature_count = x[0].shape[1]
-        print("feature count: ", feature_count)
         return torch.tensor(np.array(x), dtype=torch.float32).view(-1, seq_size, feature_count), torch.tensor(y, dtype=torch.float32).view(-1, 1)
 
     x_train, y_train = to_sequences(window_size, df_train)
@@ -975,7 +983,7 @@ def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2'
 
     return model, scaler
 
-def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout: float=0.25, learning_rate: float=0.001, drop_columns: list=[]):
+def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[]):
     """
     args:   df: pd.DataFrame
             y_feature: str
@@ -984,13 +992,13 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
             epochs: int
             clean_data: bool
 
-    returns: nn.Module, StandardScaler
+    returns: nn.Module, StandardScaler, rmse (float), mae (float), mape (float), train_loss (float), val_loss (float)
     """
     # Prepare the data for the model
     train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index = get_data_for_multivarate_sequential_forecast(df, y_feature, window_size, aggregation_level, clean_data=clean_data, batch_size=batch_size, drop_columns=drop_columns)
-    save_dataframe(full_preprocessed_df_unscaled, model_name=f'transformer_multivariate_{aggregation_level}')
+    save_dataframe(full_preprocessed_df_unscaled, model_name=f'transformer_multivariate_{aggregation_level}', overwrite=True)
     # Train the model
-    model = train_transformer_model(device, train_loader, test_loader, scaler, epochs, input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout=dropout, learning_rate=learning_rate, y_feature_scaler_index=y_feature_scaler_index)
+    model, train_loss, val_loss = train_transformer_model(device, train_loader, test_loader, scaler, epochs, input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder, learning_rate=learning_rate, y_feature_scaler_index=y_feature_scaler_index)
     
     # Save the model, scaler and used columns
     save_model(model, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
@@ -1000,7 +1008,7 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
     # Evaluate the model
     rmse, mae, mape = evaluate_transformer_model(device, test_loader, model, scaler, y_test, y_feature_scaler_index=y_feature_scaler_index, input_dim=input_dim)
 
-    return model, scaler, rmse, mae, mape
+    return model, scaler, rmse, mae, mape, train_loss, val_loss
 
 def fill_data_for_prediction(df: pd.DataFrame):
     """

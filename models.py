@@ -24,20 +24,29 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
     
 class TransformerModel(nn.Module):
-    def __init__(self, input_dim=1, d_model=64, nhead=4, num_layers=2, dropout=0.25):
+    def __init__(self, input_dim=1, d_model=64, nhead=4, num_layers=2, dropout_pe=0.25, dropout_encoder=0.25, num_devices=1, device_embedding_dim=16):
         super(TransformerModel, self).__init__()
 
-        self.encoder = nn.Linear(input_dim, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead)
+        self.device_embedding = nn.Embedding(num_devices, device_embedding_dim)
+        self.encoder = nn.Linear(input_dim + device_embedding_dim, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout_pe)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dropout=dropout_encoder)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
-        self.decoder = nn.Linear(d_model, 1)
+        self.decoder1 = nn.Linear(d_model, d_model//2)
+        self.relu = nn.LeakyReLU()
+        self.decoder2 = nn.Linear(d_model//2, 1)
+        self.dropout = nn.Dropout(0.1)
 
-    def forward(self, x):
+    def forward(self, x, device_ids):
+        device_embeds = self.device_embedding(device_ids)
+        x = torch.cat((x, device_embeds), dim=-1)
         x = self.encoder(x)
         x = self.pos_encoder(x)
         x = self.transformer_encoder(x)
-        x = self.decoder(x[:, -1, :])
+        x = self.decoder1(x[:, -1, :])
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.decoder2(x)
         return x
 
 class LSTMModel(nn.Module):
