@@ -57,7 +57,6 @@ if not data_exists:
 
 df_room_date = df_room[df_room['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
 df_room_date['date_time_rounded'] = df_room_date['date_time'].dt.round(frequency)
-print(df_room_date)
 
 c1, c2 = st.columns([1, 2])
 
@@ -104,9 +103,12 @@ device = utils.get_device()
 df_room_date_pred = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast)
 # merge with df_room_date on 'date_time_rounded'
 df_for_plot = pd.merge(df_room_date, df_room_date_pred, on='date_time_rounded', how='left', suffixes=('', '_pred'))
-print(df_for_plot.columns)
+#print(df_for_plot[f'{selected_feature}_pred'])
 
 st.markdown("## Detailed Data View")
+if df_for_plot[f'{selected_feature}_pred'].isna().all():
+    # show message that theres not enough context data to predict
+    st.markdown("<div style='color:red; border: 1px solid red; padding: 10px;'>Not enough context data available to calculate a forecast, please select a data with more available data</div>", unsafe_allow_html=True)
 st.plotly_chart(utils.plot_figure(df_for_plot, y_feature=selected_feature), use_container_width=True)
 st.markdown(f"## Overview of entire available {feature_data} data for {input_device}")
 st.plotly_chart(utils.plot_figure(df_room, y_feature=selected_feature, mode="markers"), use_container_width=True)

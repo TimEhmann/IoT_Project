@@ -15,6 +15,9 @@ import holidays
 from datetime import date, timedelta
 import datetime
 import torch.optim as optim
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module='sklearn.base')
 
 def get_device() -> torch.device:
     has_mps = torch.backends.mps.is_built()
@@ -194,7 +197,8 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     # add a trace for CO2_pred if it exists
     x_feature_pred = 'date_time_rounded' if 'date_time_rounded' in df.columns else 'date_time'
     if f'{y_feature}_pred' in df.columns:
-        fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
+        if not df[f'{y_feature}_pred'].isna().all():
+            fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
     fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
 
     return fig
@@ -1079,7 +1083,8 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     if result_df.isnull().values.any():
         result_df = fill_data_for_prediction(result_df)
     if result_df.isnull().values.any():
-        raise ValueError("There are still NaN values in the dataframe.")
+        # return empty dataframe
+        return df_predictions
     
     columns_to_scale = [col for col in result_df.columns if col != 'date_time_rounded']
     y_feature_scaler_index = columns_to_scale.index(y_feature)
@@ -1098,7 +1103,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
 
                 zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert predicted values into the correct column
                 inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
-                predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(0)
+                predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(2)
                 new_timestamp = df_subset['date_time_rounded'].max() + pd.to_timedelta(freq)
                 new_row = pd.DataFrame({
                     'date_time_rounded': new_timestamp,
