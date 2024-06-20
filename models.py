@@ -34,11 +34,12 @@ class TransformerModel(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
         self.decoder1 = nn.Linear(d_model, d_model//2)
         self.relu = nn.LeakyReLU()
-        self.decoder2 = nn.Linear(d_model//2, 1)
         self.dropout = nn.Dropout(0.1)
+        self.decoder2 = nn.Linear(d_model//2, 1)
 
     def forward(self, x, device_ids):
         device_embeds = self.device_embedding(device_ids)
+        device_embeds = device_embeds.unsqueeze(1).expand(-1, x.size(1), -1)
         x = torch.cat((x, device_embeds), dim=-1)
         x = self.encoder(x)
         x = self.pos_encoder(x)

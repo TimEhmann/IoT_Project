@@ -20,16 +20,30 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='sklearn.base')
 
 def get_device() -> torch.device:
+    """
+    returns device depending on macbook and pc
+    return device
+    """
     has_mps = torch.backends.mps.is_built()
     return "mps" if has_mps else "cuda" if torch.cuda.is_available() else "cpu"
 
 def get_batch_size() -> int:
+    """
+    returns batch_size depending on macbook and pc
+    return batch_size
+    """
     if get_device() == "mps":
         return 128
     else:
         return 1500
 
 def get_list_of_special_dates():
+    """
+    1. returns a holidays object with holidays in germany as well as holidays at HKA.
+    2. returns a holidays object with the exam dates at HKA
+
+    return holiday_list, exam_dates
+    """
     holiday_list = holidays.Germany(years=[2022, 2023, 2024])
     exam_dates = holidays.HolidayBase()
 
@@ -66,27 +80,42 @@ def get_list_of_special_dates():
 
     return holiday_list, exam_dates
 
-def save_model(model: nn.Module, model_name: str=None, model_path: str=None, y_feature: str='CO2'):
+def save_model(model: nn.Module, model_name: str=None, model_path: str=None, y_feature: str='CO2', overwrite: bool = False):
+    """
+    saves model to path or figures out the path
+    """
     if model_path is None:
         version = 1
         while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
             version += 1
         
+        if overwrite and version > 1:
+            version -= 1
+        
         model_path = f'models/{model_name}_{y_feature}_model_v{version}.pth'
 
     torch.save(model.state_dict(), model_path)
 
-def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, y_feature: str='CO2'):
+def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, y_feature: str='CO2', overwrite: bool = False):
+    """
+    saves model to path or figures out the path
+    """
     if scaler_path is None:
         version = 1
         while os.path.isfile(f'models/{model_name}_{y_feature}_scaler_v{version}.pth'):
             version += 1
+
+        if overwrite and version > 1:
+            version -= 1
         
         scaler_path = f'models/{model_name}_{y_feature}_scaler_v{version}.pth'
     
     torch.save(scaler, scaler_path)
 
-def save_columns(df: pd.DataFrame, model_name: str=None, file_path: str=None, y_feature: str='CO2'):
+def save_columns(df: pd.DataFrame, model_name: str=None, file_path: str=None, y_feature: str='CO2', overwrite: bool = False):
+    """
+    saves columns to path or figures out the path
+    """
     if file_path is None:
         version = 1
         while os.path.isfile(f'models/{model_name}_{y_feature}_columns_v{version}.pkl'):
@@ -98,7 +127,10 @@ def save_columns(df: pd.DataFrame, model_name: str=None, file_path: str=None, y_
         pickle.dump(df.columns.tolist(), f)
 
 def get_different_rows(source_df, new_df):
-    """Returns just the rows from the new dataframe that differ from the source dataframe"""
+    """
+    Returns just the rows from the new dataframe that differ from the source dataframe
+    return changed_rows_df
+    """
     for col in source_df.columns:
         if col in new_df.columns:
             if source_df[col].dtype != new_df[col].dtype:
@@ -113,8 +145,10 @@ def get_different_rows(source_df, new_df):
     changed_rows_df = merged_df[merged_df['_merge'] == 'right_only']
     return changed_rows_df.drop('_merge', axis=1)
 
-
 def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None, overwrite: bool=False):
+    """
+    saves dataframe to path or figures out the path
+    """
     if file_path is None:
         version = 1
         while os.path.isfile(f'data/{model_name}_dataframe_v{version}.parquet'):
@@ -234,8 +268,10 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
             y_feature: str
             window_size: int
             aggregation_level: str, one of "hour", "half_hour", "quarter_hour"
+            batch_size: int
+            clean_data: bool
 
-    returns: np.array
+    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
     """
     # use data cleaning from clean_data function
     df_cpy = clean_df(df, clean_data)
@@ -315,10 +351,18 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
-def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0):
+def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0, num_devices=50, device_embedding_dim=16):
+    """
+    training transformer model. 
+    Got reworked to use embedding for device_id to drastically reduce the dimensionality.
+    Doesnt work anymore with one hot encoded data.
+
+    return model, train_loss, val_loss
+    """
+    
     if input_dim == None:
         input_dim = train_loader.dataset.tensors[0].shape[-1]
-    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder).to(device)
+    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder, num_devices=num_devices, device_embedding_dim=device_embedding_dim).to(device)
     # Train the model
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
@@ -332,11 +376,11 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
         model.train()
         train_losses = []
         for batch in train_loader:
-            x_batch, y_batch = batch
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            x_batch, device_ids_batch, y_batch = batch
+            x_batch, device_ids_batch, y_batch = x_batch.to(device), device_ids_batch.to(device), y_batch.to(device)
 
             optimizer.zero_grad()
-            outputs = model(x_batch)
+            outputs = model(x_batch, device_ids_batch)
             loss = criterion(outputs, y_batch)
             train_losses.append(loss.item())
             loss.backward()
@@ -348,9 +392,9 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
         val_losses = []
         with torch.no_grad():
             for batch in test_loader:
-                x_batch, y_batch = batch
-                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                outputs = model(x_batch)
+                x_batch, device_ids_batch, y_batch = batch
+                x_batch, device_ids_batch, y_batch = x_batch.to(device), device_ids_batch.to(device), y_batch.to(device)
+                outputs = model(x_batch, device_ids_batch)
                 loss = criterion(outputs, y_batch)
                 val_losses.append(loss.item())
                 if not print_for_epoch:
@@ -497,8 +541,13 @@ def train_fcn_model(device, train_loader: DataLoader, test_loader: DataLoader, s
     return model
 
 def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module, scaler: StandardScaler, y_test: torch.Tensor, y_feature_scaler_index: int=0, input_dim: int=1):
-    '''kind of pointless function, because its almost the exact same thing that happens after each epoch.
-    But it can be used to evaluate a model at a later point again'''
+    '''
+    kind of pointless function, because its almost the exact same thing that happens after each epoch.
+    But it can be used to evaluate a model at a later point again.
+    Also, it returns more model performance scores than the training loop.
+
+    return rmse, mae, me, mape
+    '''
     if input_dim == None:
         input_dim = test_loader.dataset.tensors[0].shape[-1]
     # Evaluation
@@ -508,9 +557,9 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     
     with torch.no_grad():
         for batch in test_loader:
-            x_batch, y_batch = batch
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            outputs = model(x_batch)
+            x_batch, device_ids_batch, y_batch = batch
+            x_batch, device_ids_batch, y_batch = x_batch.to(device), device_ids_batch.to(device), y_batch.to(device)
+            outputs = model(x_batch, device_ids_batch)
             # Reshape and inverse transform only the 'y_feature' outputs using the specific index
             actual_batch = y_batch.cpu().numpy().reshape(-1, 1)
             predicted_batch = outputs.cpu().numpy().reshape(-1, 1)
@@ -538,11 +587,21 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     print(f"Score (RMSE): {rmse:.4f}")
     mae = np.mean(np.abs(actual - predictions))
     print(f"Score (MAE): {mae:.4f}")
+    me = np.mean(actual - predictions)
+    print(f"Score (ME): {me:.4f}")
     mape = np.mean(np.abs((actual - predictions) / actual)) * 100
     print(f"Score (MAPE): {mape:.4f}%")
-    return rmse, mae, mape
+    return rmse, mae, me, mape
 
 def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1, d_model: int=128, nhead: int=4, num_layers: int=4, dropout_pe: float=0.25, dropout_encoder: float=0.25) -> nn.Module:
+    """
+    loads a transformer model using the model name or model_path.
+    If model_path is set, it will load exactly that model.
+    If model_path is not set, it will load the latest model for the combination of model_name and y_feature
+
+    return model
+    """
+    
     if model_path is None:
         version = 1
         while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
@@ -558,6 +617,14 @@ def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_pat
     return model
 
 def load_scaler(y_feature: str='CO2', model_name: str=None, scaler_path: str=None) -> StandardScaler:
+    """
+    loads a scaler using the model name or scaler_path.
+    If scaler_path is set, it will load exactly that model.
+    If scaler_path is not set, it will load the latest scaler for the combination of model_name and y_feature
+
+    return scaler
+    """
+    
     if scaler_path is None:
         version = 1
         while os.path.isfile(f"models/{model_name}_{y_feature}_scaler_v{version}.pth"):
@@ -572,10 +639,22 @@ def load_scaler(y_feature: str='CO2', model_name: str=None, scaler_path: str=Non
     return scaler
 
 def load_columns(file_path: str) -> list:
+    """
+    loads the list of columns saved at <file_path>. Pointless function so far, probably should be deleted.
+
+    return pickle.load(f)
+    """
     with open(file_path, 'rb') as f:
         return pickle.load(f)
 
 def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
+    """
+    loads a saved dataframe using the model_name or file_path.
+    If file_path is set, it will load exactly that model.
+    If file_path is not set, it will load the latest dataframe for the model_name
+
+    return pd.read_parquet(file_path)
+    """
     if file_path is None:
         version = 1
         while os.path.isfile(f'data/{model_name}_dataframe_v{version}.parquet'):
@@ -587,10 +666,17 @@ def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
 
 def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
     """
+    This function was used for predicting data with the v1 transformer (uni-variate). 
+    Probably useless by now. I dont even know anymore what exact data is returned.
+    I believe it takes df as input, checks for which rows its possible to predict data, and if possible, add the required <window_size>
+    context datapoints in one column scaled, and one unscaled. I dont know how its used further than that right now.
+
     args:   df: pd.DataFrame
             clean_data: bool
 
     returns: pd.DataFrame
+
+    return df_cpy
     """
     df_cpy = clean_df(df, clean_data)
 
@@ -637,10 +723,12 @@ def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data
     print("help: ", df_help.shape)
     df_cpy = df_cpy.merge(df_help[['device_id', 'date_time_rounded', f'{y_feature}_context', f'{y_feature}_context_unscaled']], on=['device_id', 'date_time_rounded'], how='left')
     print("NaN count: ", df_cpy[f'{y_feature}_context'].isna().sum())
+    
     return df_cpy
 
 def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size()) -> pd.DataFrame:
     """
+    takes a df as input and create a "predicted" point at every row where its possible.
     args:   device: torch.device
             model: nn.Module
             scaler: StandardScaler
@@ -651,6 +739,8 @@ def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, dev
             y_feature: str
 
     returns: pd.DataFrame
+
+    return df+pred
     """
     df_pred = get_data_for_prediction(df, scaler, clean_data, window_size, aggregation_level, y_feature)
     print(df_pred)
@@ -690,6 +780,9 @@ def predict_data(model: nn.Module, scaler: StandardScaler, df: pd.DataFrame, dev
 
 def create_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device() ,window_size: int=20, epochs: int=1000, clean_data: bool=True):
     """
+    Deprecated function.
+    Full pipeline to create a univariate transformer model for <y_feature> using the other input.
+
     args:   df: pd.DataFrame
             y_feature: str
             aggregation_level: str
@@ -713,6 +806,9 @@ def create_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2',
 
 def get_full_training_dataset(df: pd.DataFrame, aggregation_level: str='half_hour', window_size: int=5, clean_data: bool=True):
     """
+    This function was used for creating a dataset for non-sequential models like MLPs.
+    It works by adding lag features for the columns ['tmp', 'hum', 'CO2', 'VOC', 'vis'] because these seem to be the relecant context data.
+    Deprecated by now because the model is absolute garbage.
     args:   df: pd.DataFrame
             clean_data: bool
 
@@ -775,6 +871,9 @@ def get_full_training_dataset(df: pd.DataFrame, aggregation_level: str='half_hou
 
 def get_data_for_multivariate_forecast(df: pd.DataFrame, y_feature: str='CO2', window_size: int=5, aggregation_level: str = 'half_hour', batch_size: int=get_batch_size(), clean_data: bool=True, drop_columns: list=[]) -> np.array:
     """
+    Creates a dataframe for multivariate-non-sequential-models.
+    Deprecated by now because the models are absolute garbage.
+
     args:   df: pd.DataFrame
             y_feature: str
             window_size: int
@@ -783,7 +882,7 @@ def get_data_for_multivariate_forecast(df: pd.DataFrame, y_feature: str='CO2', w
             clean_data: bool
             drop_columns: list
 
-    returns: np.array
+    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
     """
     df_cpy = get_full_training_dataset(df, aggregation_level, window_size, clean_data)
 
@@ -847,12 +946,23 @@ def get_data_for_multivariate_forecast(df: pd.DataFrame, y_feature: str='CO2', w
 
 def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: str='CO2', window_size: int=5, aggregation_level: str = 'half_hour', batch_size: int=get_batch_size(), clean_data: bool=True, drop_columns: list=[]) -> np.array:
     """
+    Creates the training and test data as well as the scaler and a dataframe with the full preprocessed data for multivariate-sequential-models.
+    Currently the latest and best function to create the training and test data.
+    Currently only uses complete data sets where a full <window_size> data points are available before another datapoint.
+    This combination then is a training example. There is no filling if e.g. one data point would be missing because currently there is
+    enough training data available anyways and we can use only high quality real training examples therefore.
+
     args:   df: pd.DataFrame
             y_feature: str
             window_size: int
             aggregation_level: str, one of "hour", "half_hour", "quarter_hour"
+            aggregation_level: str
+            batch_size: int
+            clean_data: bool=True
+            drop_columns: list
 
-    returns: np.array
+
+    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index
     """
     # use data cleaning from clean_data function
     df_cpy = clean_df(df, clean_data)
@@ -909,8 +1019,10 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     threshold_date = df_cpy.sort_values('date_time_rounded', ascending=True)['date_time_rounded'].quantile(0.8)
     print('training data cutoff: ', threshold_date)
 
-    # one hout encode device_id
-    df_cpy = pd.get_dummies(df_cpy, columns=['device_id'])
+    full_preprocessed_df_unscaled = deepcopy(df_cpy)
+
+    df_cpy['device_id'] = df_cpy['device_id'].astype('category').cat.codes
+
     df_train = df_cpy[df_cpy['date_time_rounded'] < threshold_date]
     df_test = df_cpy[df_cpy['date_time_rounded'] >= threshold_date]
 
@@ -918,7 +1030,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     scaler = StandardScaler()
 
     # Get the columns to scale
-    columns_to_scale = [col for col in df_train.columns if col != 'date_time_rounded']
+    columns_to_scale = [col for col in df_train.columns if col not in ['date_time_rounded', 'device_id']]
 
     # Fit on training data and transform both training and test data
     df_train[columns_to_scale] = scaler.fit_transform(df_train[columns_to_scale])
@@ -934,34 +1046,40 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     def to_sequences(seq_size: int, obs: pd.DataFrame):
         x = []
         y = []
+        device_ids = []
         for g_id in obs['group'].unique():
             group_df = obs[obs['group'] == g_id]
             feature_values = group_df[f'{y_feature}'].to_numpy().reshape(-1, 1).flatten().tolist()
             for i in range(len(group_df) - seq_size):
                 window = group_df[i:(i + seq_size)]
                 after_window = feature_values[i + seq_size]
-                x.append(window.values)
+                x.append(window.drop(columns=['device_id', 'group']).values)
+                device_ids.append(window['device_id'].values[-1])
                 y.append(after_window)
         feature_count = x[0].shape[1]
-        return torch.tensor(np.array(x), dtype=torch.float32).view(-1, seq_size, feature_count), torch.tensor(y, dtype=torch.float32).view(-1, 1)
+        return (torch.tensor(np.array(x), dtype=torch.float32).view(-1, seq_size, feature_count),
+                torch.tensor(device_ids, dtype=torch.long),
+                torch.tensor(y, dtype=torch.float32).view(-1, 1))
 
-    x_train, y_train = to_sequences(window_size, df_train)
-    x_test, y_test = to_sequences(window_size, df_test)
+    x_train, train_device_ids, y_train = to_sequences(window_size, df_train)
+    x_test, test_device_ids, y_test = to_sequences(window_size, df_test)
 
-    print("Training data shape:", x_train.shape, y_train.shape)
-    print("Testing data shape:", x_test.shape, y_test.shape)
+    print("Training data shape:", x_train.shape, train_device_ids.shape,y_train.shape)
+    print("Testing data shape:", x_test.shape, test_device_ids.shape, y_test.shape)
 
     # Setup data loaders for batch
-    train_dataset = TensorDataset(x_train, y_train)
+    train_dataset = TensorDataset(x_train, train_device_ids, y_train)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
-    test_dataset = TensorDataset(x_test, y_test)
+    test_dataset = TensorDataset(x_test, test_device_ids, y_test)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
-    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, df_cpy, y_feature_scaler_index
+    return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index
 
 def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device() ,window_size: int=5, epochs: int=1000, clean_data: bool=True, drop_columns: list=[]):
     """
+    Creates a multivariate-non-sequential-model for the selected feature.
+    Deprecated because the model is absolute garbage.
     args:   df: pd.DataFrame
             y_feature: str
             aggregation_level: str, one of "hour", "half_hour", "quarter_hour"
@@ -970,6 +1088,8 @@ def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2'
             clean_data: bool
 
     returns: nn.Module, StandardScaler
+
+    return model, scaler
     """
     # Prepare the data for the model
     train_dataset, test_dataset, train_loader, test_loader, scaler, y_test = get_data_for_multivariate_forecast(df, y_feature, window_size, aggregation_level, clean_data=clean_data, drop_columns=drop_columns)
@@ -985,6 +1105,9 @@ def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2'
 
 def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[]):
     """
+    full pipeline to create a multi-variate transformer model for a selected feature.
+    Currently best model. Doesnt use one-hot encoding (except of Semester, which has only 3 values), but embeddings to reduce dimensionality.
+
     args:   df: pd.DataFrame
             y_feature: str
             aggregation_level: str, one of "hour", "half_hour", "quarter_hour"
@@ -992,26 +1115,34 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
             epochs: int
             clean_data: bool
 
-    returns: nn.Module, StandardScaler, rmse (float), mae (float), mape (float), train_loss (float), val_loss (float)
+    returns: nn.Module, StandardScaler, rmse (float), mae (float), mape (float), train_loss (float), val_loss (float), num_features (int)
     """
     # Prepare the data for the model
     train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index = get_data_for_multivarate_sequential_forecast(df, y_feature, window_size, aggregation_level, clean_data=clean_data, batch_size=batch_size, drop_columns=drop_columns)
-    save_dataframe(full_preprocessed_df_unscaled, model_name=f'transformer_multivariate_{aggregation_level}', overwrite=True)
+    # Get the first batch of the training data
+    data, devices, labels = next(iter(train_loader))
+
+    # Get the number of features from the data
+    num_features = data.shape[2] + 1
+    print(num_features)
+    save_dataframe(full_preprocessed_df_unscaled, model_name=f'transformer_multivariate_{aggregation_level}_{num_features}f', overwrite=True)
     # Train the model
-    model, train_loss, val_loss = train_transformer_model(device, train_loader, test_loader, scaler, epochs, input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder, learning_rate=learning_rate, y_feature_scaler_index=y_feature_scaler_index)
+    num_unique_devices = len(full_preprocessed_df_unscaled['device_id'].unique())
+    model, train_loss, val_loss = train_transformer_model(device, train_loader, test_loader, scaler, epochs, input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder, learning_rate=learning_rate, y_feature_scaler_index=y_feature_scaler_index, num_devices=num_unique_devices)
     
     # Save the model, scaler and used columns
-    save_model(model, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
-    save_scaler(scaler, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
-    save_columns(full_preprocessed_df_unscaled, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}')
+    save_model(model, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}_{num_features}f')
+    save_scaler(scaler, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}_{num_features}f')
+    # save_columns(full_preprocessed_df_unscaled, y_feature=y_feature, model_name=f'transformer_multivariate_{aggregation_level}_{num_features}f')
 
     # Evaluate the model
-    rmse, mae, mape = evaluate_transformer_model(device, test_loader, model, scaler, y_test, y_feature_scaler_index=y_feature_scaler_index, input_dim=input_dim)
+    rmse, mae, me, mape = evaluate_transformer_model(device, test_loader, model, scaler, y_test, y_feature_scaler_index=y_feature_scaler_index, input_dim=input_dim)
 
-    return model, scaler, rmse, mae, mape, train_loss, val_loss
+    return model, scaler, rmse, mae, me, mape, train_loss, val_loss, num_features
 
 def fill_data_for_prediction(df: pd.DataFrame):
     """
+    fills missing datapoints using intpolation. THe rest is filles with bfill and ffill
     args:   df: pd.DataFrame
 
     returns: pd.DataFrame
@@ -1088,7 +1219,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     result_df = df_timestamps.merge(df, on='date_time_rounded', how='left')
 
     # check if result_df has nan values
-    if result_df.isnull().values.any():
+    if result_df.isnull().values.any() and (result_df.shape[0] - result_df.dropna().shape[0]) > 0.5*result_df.shape[0]:
         result_df = fill_data_for_prediction(result_df)
     if result_df.isnull().values.any():
         # return empty dataframe
@@ -1102,7 +1233,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
         for j in range(result_df.shape[0] - window_size):
             df_subset = result_df.iloc[j:j+window_size]
             for i in range(prediction_count):
-                df_input = df_subset.tail(20).drop(['date_time_rounded'], axis=1).values
+                df_input = df_subset.tail(20).drop(['date_time_rounded', 'group'], axis=1).values
                 df_input = scaler.transform(df_input)
                 input_data = torch.tensor(df_input, dtype=torch.float32).view(-1, window_size, df_input.shape[1])
                 prediction = model(input_data.to(device))
