@@ -185,7 +185,7 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None, 
                 print(latest_dataframe.dtypes)
                 print(df.dtypes)
             
-            if df.drop(columns=['hour_sin']).equals(latest_dataframe.drop(columns=['hour_sin'])):
+            if df.drop(columns=['time_sin', 'time_cos']).equals(latest_dataframe.drop(columns=['time_sin', 'time_cos'])):
                 print("Dataframe is already saved.")
                 return
             else:
