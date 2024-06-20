@@ -24,7 +24,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
     
 class TransformerModel(nn.Module):
-    def __init__(self, input_dim=1, d_model=64, nhead=4, num_layers=2, dropout_pe=0.25, dropout_encoder=0.25, num_devices=1, device_embedding_dim=16):
+    def __init__(self, input_dim=1, d_model=64, nhead=4, num_layers=2, dropout_pe=0.25, dropout_encoder=0.25, num_devices=1, device_embedding_dim=4):
         super(TransformerModel, self).__init__()
 
         self.device_embedding = nn.Embedding(num_devices, device_embedding_dim)

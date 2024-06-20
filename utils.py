@@ -16,6 +16,8 @@ from datetime import date, timedelta
 import datetime
 import torch.optim as optim
 import warnings
+import gzip
+import shutil
 
 warnings.filterwarnings("ignore", category=UserWarning, module='sklearn.base')
 
@@ -86,15 +88,23 @@ def save_model(model: nn.Module, model_name: str=None, model_path: str=None, y_f
     """
     if model_path is None:
         version = 1
-        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
+        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth.gz"):
             version += 1
         
         if overwrite and version > 1:
             version -= 1
         
-        model_path = f'models/{model_name}_{y_feature}_model_v{version}.pth'
+        model_path = f'models/{model_name}_{y_feature}_model_v{version}.pth.gz'
 
-    torch.save(model.state_dict(), model_path)
+    temp_path = model_path + '.tmp'
+    torch.save(model, temp_path)
+    
+    with open(temp_path, 'rb') as f_in:
+        with gzip.open(model_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    
+    os.remove(temp_path)
+
 
 def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, y_feature: str='CO2', overwrite: bool = False):
     """
@@ -351,7 +361,7 @@ def get_data_for_transformer(df: pd.DataFrame, y_feature: str='CO2', window_size
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
-def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0, num_devices=50, device_embedding_dim=16):
+def train_transformer_model(device, train_loader: DataLoader, test_loader: DataLoader, scaler: StandardScaler, epochs: int=1000, input_dim=None, d_model=64, nhead=4, num_layers=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, y_feature_scaler_index: int=0, num_devices=50, device_embedding_dim=4):
     """
     training transformer model. 
     Got reworked to use embedding for device_id to drastically reduce the dimensionality.
@@ -593,7 +603,7 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
     print(f"Score (MAPE): {mape:.4f}%")
     return rmse, mae, me, mape
 
-def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device(), input_dim: int=1, d_model: int=128, nhead: int=4, num_layers: int=4, dropout_pe: float=0.25, dropout_encoder: float=0.25) -> nn.Module:
+def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_path: str=None, device: torch.device=get_device()) -> nn.Module:
     """
     loads a transformer model using the model name or model_path.
     If model_path is set, it will load exactly that model.
@@ -604,16 +614,23 @@ def load_transformer_model(y_feature: str='CO2', model_name: str=None, model_pat
     
     if model_path is None:
         version = 1
-        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth"):
+        while os.path.isfile(f"models/{model_name}_{y_feature}_model_v{version}.pth.gz"):
             version += 1
         
-        model_path = f"models/{model_name}_{y_feature}_model_v{version-1}.pth"
+        model_path = f"models/{model_name}_{y_feature}_model_v{version-1}.pth.gz"
         print("loading latest model: " + model_path)
     else:
         print("loading:" + model_path)
-    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, dropout_pe=dropout_pe, dropout_encoder=dropout_encoder).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-
+    
+    temp_path = model_path + '.tmp'
+    with gzip.open(model_path, 'rb') as f_in:
+        with open(temp_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    
+    model = torch.load(temp_path, map_location=device)
+    
+    os.remove(temp_path)
+    
     return model
 
 def load_scaler(y_feature: str='CO2', model_name: str=None, scaler_path: str=None) -> StandardScaler:
@@ -840,10 +857,13 @@ def get_full_training_dataset(df: pd.DataFrame, aggregation_level: str='half_hou
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
     
     # add time dependent information
-    df_cpy['weekday'] = df_cpy['date_time_rounded'].dt.weekday
-    df_cpy['month'] = df_cpy['date_time_rounded'].dt.month
-    #df_cpy['hour'] = df_cpy['date_time_rounded'].dt.round('60T').dt.hour
-    df_cpy['hour_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time'].dt.minute * 60) / 86400.0)
+    df_cpy['weekday_sin'] = df_cpy['date_time_rounded'].dt.weekday
+    # df_cpy['month'] = df_cpy['date_time_rounded'].dt.month
+    df_cpy['month_sin'] = np.sin(2 * np.pi * df_cpy['date_time_rounded'].dt.month / 12)
+    df_cpy['month_cos'] = np.cos(2 * np.pi * df_cpy['date_time_rounded'].dt.month / 12)
+    # df_cpy['hour'] = df_cpy['date_time_rounded'].dt.round('60T').dt.hour
+    df_cpy['time_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time'].dt.minute * 60) / 86400.0)
+    df_cpy['time_sin'] = np.cos(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time'].dt.minute * 60) / 86400.0)
     df_cpy['semester'] = 'WS22/23'
     df_cpy.loc[df_cpy['date_time_rounded'] >= '2023-03-01', 'semester'] = 'SS23'
     df_cpy.loc[df_cpy['date_time_rounded'] >= '2023-09-01', 'semester'] = 'WS23/24'
@@ -986,9 +1006,15 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
     
     # add time dependent information
-    df_cpy['weekday'] = df_cpy['date_time_rounded'].dt.weekday
-    df_cpy['month'] = df_cpy['date_time_rounded'].dt.month
-    df_cpy['hour_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time_rounded'].dt.minute * 60) / 86400.0)
+    # df_cpy['weekday'] = df_cpy['date_time_rounded'].dt.weekday
+    # df_cpy['month'] = df_cpy['date_time_rounded'].dt.month
+    # df_cpy['hour_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time_rounded'].dt.minute * 60) / 86400.0)
+    df_cpy['weekday_sin'] = np.sin(2 * np.pi * df_cpy['date_time_rounded'].dt.weekday / 7)
+    df_cpy['weekday_cos'] = np.cos(2 * np.pi * df_cpy['date_time_rounded'].dt.weekday / 7)
+    df_cpy['month_sin'] = np.sin(2 * np.pi * df_cpy['date_time_rounded'].dt.month / 12)
+    df_cpy['month_cos'] = np.cos(2 * np.pi * df_cpy['date_time_rounded'].dt.month / 12)
+    df_cpy['time_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time'].dt.minute * 60) / 86400.0)
+    df_cpy['time_cos'] = np.cos(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time'].dt.minute * 60) / 86400.0)
     df_cpy['semester'] = 'WS22/23'
     df_cpy.loc[df_cpy['date_time_rounded'] >= '2023-03-01', 'semester'] = 'SS23'
     df_cpy.loc[df_cpy['date_time_rounded'] >= '2023-09-01', 'semester'] = 'WS23/24'
@@ -1030,7 +1056,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     scaler = StandardScaler()
 
     # Get the columns to scale
-    columns_to_scale = [col for col in df_train.columns if col not in ['date_time_rounded', 'device_id']]
+    columns_to_scale = [col for col in df_train.columns if col not in ['date_time_rounded', 'device_id', 'group']]
 
     # Fit on training data and transform both training and test data
     df_train[columns_to_scale] = scaler.fit_transform(df_train[columns_to_scale])
@@ -1067,11 +1093,36 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     print("Training data shape:", x_train.shape, train_device_ids.shape,y_train.shape)
     print("Testing data shape:", x_test.shape, test_device_ids.shape, y_test.shape)
 
+    # combining the datasets again and shuffle them. This is because we cant shuffle them before because of the context. Maybe we can, but im too layzy to think about it.
+    x_combined = torch.cat((x_train, x_test), dim=0)
+    device_ids_combined = torch.cat((train_device_ids, test_device_ids), dim=0)
+    y_combined = torch.cat((y_train, y_test), dim=0)
+
+    # Shuffle the combined dataset
+    combined_dataset = TensorDataset(x_combined, device_ids_combined, y_combined)
+    combined_loader = DataLoader(combined_dataset, batch_size=len(combined_dataset), shuffle=True)
+
+    # Get shuffled data from the loader
+    for batch in combined_loader:
+        x_combined_shuffled, device_ids_combined_shuffled, y_combined_shuffled = batch
+
+    # Split back into training and test sets (80:20 split)
+    split_index = int(0.8 * len(x_combined_shuffled))
+    x_train_shuffled, x_test_shuffled = x_combined_shuffled[:split_index], x_combined_shuffled[split_index:]
+    train_device_ids_shuffled, test_device_ids_shuffled = device_ids_combined_shuffled[:split_index], device_ids_combined_shuffled[split_index:]
+    y_train_shuffled, y_test_shuffled = y_combined_shuffled[:split_index], y_combined_shuffled[split_index:]
+
+    print("Shuffled Training data shape:", x_train_shuffled.shape, train_device_ids_shuffled.shape, y_train_shuffled.shape)
+    print("Shuffled Testing data shape:", x_test_shuffled.shape, test_device_ids_shuffled.shape, y_test_shuffled.shape)
+
     # Setup data loaders for batch
-    train_dataset = TensorDataset(x_train, train_device_ids, y_train)
+    # train_dataset = TensorDataset(x_train, train_device_ids, y_train)
+    train_dataset = TensorDataset(x_train_shuffled, train_device_ids_shuffled, y_train_shuffled)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
-    test_dataset = TensorDataset(x_test, test_device_ids, y_test)
+
+    # test_dataset = TensorDataset(x_test, test_device_ids, y_test)
+    test_dataset = TensorDataset(x_test_shuffled, test_device_ids_shuffled, y_test_shuffled)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index
