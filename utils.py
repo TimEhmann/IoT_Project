@@ -565,12 +565,12 @@ def load_columns(file_path: str) -> list:
 def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
     if file_path is None:
         version = 1
-        while os.path.isfile(f'data/{model_name}_dataframe_v{version}.csv'):
+        while os.path.isfile(f'data/{model_name}_dataframe_v{version}.parquet'):
             version += 1
         
-        file_path = f'data/{model_name}_dataframe_v{version-1}.csv'
+        file_path = f'data/{model_name}_dataframe_v{version-1}.parquet'
     
-    return pd.read_csv(file_path)
+    return pd.read_parquet(file_path)
 
 def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
     """
