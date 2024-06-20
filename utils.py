@@ -94,6 +94,23 @@ def save_columns(df: pd.DataFrame, model_name: str=None, file_path: str=None, y_
     with open(file_path, 'wb') as f:
         pickle.dump(df.columns.tolist(), f)
 
+def get_different_rows(source_df, new_df):
+    """Returns just the rows from the new dataframe that differ from the source dataframe"""
+    for col in source_df.columns:
+        if col in new_df.columns:
+            if source_df[col].dtype != new_df[col].dtype:
+                if source_df[col].dtype == 'datetime64[ns]':
+                    new_df[col] = pd.to_datetime(new_df[col], errors='coerce')
+                elif new_df[col].dtype == 'datetime64[ns]':
+                    source_df[col] = pd.to_datetime(source_df[col], errors='coerce')
+                else:
+                    new_df[col] = new_df[col].astype(source_df[col].dtype)
+    
+    merged_df = source_df.merge(new_df, indicator=True, how='outer')
+    changed_rows_df = merged_df[merged_df['_merge'] == 'right_only']
+    return changed_rows_df.drop('_merge', axis=1)
+
+
 def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
     if file_path is None:
         version = 1
@@ -103,9 +120,24 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None):
         # check if newest saved dataframe is equal to the one thats about to be saved
         if version > 1:
             latest_dataframe = pd.read_csv(f'data/{model_name}_dataframe_v{version-1}.csv')
-            if df.equals(latest_dataframe):
+            latest_dataframe['date_time_rounded'] = pd.to_datetime(latest_dataframe['date_time_rounded'])
+            latest_dataframe['group'] = latest_dataframe['group'].astype('int32')
+            for col in latest_dataframe.select_dtypes(include=['int64']).columns:
+                latest_dataframe[col] = latest_dataframe[col].astype('uint8')
+            # check if columns are the same
+            if latest_dataframe.columns.equals(df.columns):
+                print("same columns")
+            else:
+                print(latest_dataframe.columns)
+                print(df.columns)
+            if df.drop(columns=['hour_sin']).equals(latest_dataframe.drop(columns=['hour_sin'])):
                 print("Dataframe is already saved.")
                 return
+            else:
+                print(latest_dataframe.dtypes)
+                print(df.dtypes)
+                difs = get_different_rows(latest_dataframe, df)
+                print(difs)
         
         file_path = f'data/{model_name}_dataframe_v{version}.csv'
     
@@ -285,6 +317,7 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
     for epoch in range(epochs):
         print_for_epoch = False
         model.train()
+        train_losses = []
         for batch in train_loader:
             x_batch, y_batch = batch
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -292,6 +325,7 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
             optimizer.zero_grad()
             outputs = model(x_batch)
             loss = criterion(outputs, y_batch)
+            train_losses.append(loss.item())
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -336,6 +370,8 @@ def train_transformer_model(device, train_loader: DataLoader, test_loader: DataL
         if early_stop_count >= 5:
             print("Early stopping!")
             break
+        train_loss = np.mean(train_losses)  # Calculate the average training loss
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {train_loss:.4f}")  # Print the average training loss
         print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss:.4f}")
     
     return model
