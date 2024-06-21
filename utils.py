@@ -586,6 +586,29 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
 
             predictions.extend(predicted_batch_unscaled)
             actual.extend(actual_batch_unscaled)
+        
+        ### test for comparison for later, only works with quarter hour 26f data
+        data_for_comparison = load_dataframe(model_name='transformer_multivariate_quarter_hour_26f')
+
+        # data are the first 20 data points on 10-10-2022 for am001
+        data_df = data_for_comparison.iloc[7:27].drop(columns=['device_id', 'date_time_rounded'])
+
+        data_df_scaled = scaler.transform(data_df)
+
+        input_data = torch.tensor(data_df_scaled, dtype=torch.float32).view(-1, 20, data_df_scaled.shape[1])
+        device_ids = torch.tensor([0])
+
+        predicted = model(input_data.to(device), device_ids.to(device))
+        print('input_data:', input_data)
+        print('predicted:', predicted)
+
+        prediction = predicted.cpu().numpy().reshape(-1, 1)
+        zeroes_for_scaler = np.zeros((1, 25))
+
+        zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert predicted values into the correct column
+        inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
+        predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(2)
+        print(predicted_unscaled)
 
     predictions = np.array(predictions)
     actual = np.array(actual)
@@ -679,6 +702,7 @@ def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
             version += 1
         
         file_path = f'data/{model_name}_dataframe_v{version-1}.parquet'
+        print("loading latest dataframe: " + file_path)
     
     return pd.read_parquet(file_path)
 
@@ -1275,10 +1299,11 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     result_df = df_timestamps.merge(df, on='date_time_rounded', how='left')
 
     # check if result_df has nan values
-    if result_df.isnull().values.any() and (result_df.shape[0] - result_df.dropna().shape[0]) < 0.5*result_df.shape[0]:
+    if result_df.isnull().values.any() and (result_df.shape[0] - result_df.dropna().shape[0]) < 0.75 * result_df.shape[0]:
         result_df = fill_data_for_prediction(result_df)
     if result_df.isnull().values.any():
         # return empty dataframe
+        print(f'there are {result_df.shape[0] - result_df.dropna().shape[0]} rows with missing values')
         return df_predictions
     
     columns_to_scale = [col for col in result_df.columns if col not in ['date_time_rounded', 'device_id', 'group']]
@@ -1290,11 +1315,25 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
             df_subset = result_df.iloc[j:j+window_size]
             for i in range(prediction_count):
                 device_ids = df_subset.tail(20)['device_id'].values[-1]
+                if i == 0 and j ==0:
+                    print(device_ids)
                 cols_to_drop = ['date_time_rounded', 'group', 'device_id'] if 'group' in df_subset.columns else ['date_time_rounded', 'device_id']
-                df_input = df_subset.tail(20).drop(cols_to_drop, axis=1).values
+                df_input = df_subset.tail(20).drop(cols_to_drop, axis=1)
+                if i == 0 and j ==0:
+                    print(df_subset.tail(20).drop(cols_to_drop, axis=1).dtypes)
+                df_input_unscaled = deepcopy(df_input).values
                 df_input = scaler.transform(df_input)
+                if i == 0 and j ==0:
+                    print(df_input)
+                #df_input = df_input.values
+                df_input_unscaled_tensor = torch.tensor(df_input_unscaled, dtype=torch.float32).view(-1, window_size, df_input_unscaled.shape[1])
                 input_data = torch.tensor(df_input, dtype=torch.float32).view(-1, window_size, df_input.shape[1])
                 device_ids_tensor = torch.tensor(device_ids, dtype=torch.long).view(-1)
+                if i == 0 and j <=0:
+                    print(f'input_data {j} shape:', df_input_unscaled_tensor.shape)
+                    print(df_input_unscaled_tensor)
+                    print('device_ids shape:', device_ids_tensor.shape)
+                    print(device_ids_tensor)
 
                 prediction = model(input_data.to(device), device_ids_tensor.to(device))
                 prediction = prediction.cpu().numpy().reshape(-1, 1)
