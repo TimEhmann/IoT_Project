@@ -253,6 +253,7 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
         if not df[f'{y_feature}_pred'].isna().all():
             fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred'], mode=mode, line=dict(color='red')))
     fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+    fig.update_yaxes(rangemode="tozero")
 
     return fig
 
