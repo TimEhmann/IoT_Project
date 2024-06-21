@@ -1022,6 +1022,9 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
 
     df_cpy = df_cpy.groupby(['device_id', 'date_time_rounded']).mean().reset_index()
     
+    # the data is now in the state that it needs to be so that it can be used as the context data at later predictions
+    full_preprocessed_df_unscaled = deepcopy(df_cpy)
+    
     # create 'consecutive_data_point' thats 1 if the previous data point is 1 hour before the current data point and device_id is the same, else 0
     time_delta = 3600 if aggregation_level == 'hour' else 1800 if aggregation_level == 'half_hour' else 900
     df_cpy['consecutive_data_point'] = (df_cpy['date_time_rounded'] - df_cpy['date_time_rounded'].shift(1)).dt.total_seconds() == time_delta
@@ -1044,8 +1047,6 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     
     threshold_date = df_cpy.sort_values('date_time_rounded', ascending=True)['date_time_rounded'].quantile(0.8)
     print('training data cutoff: ', threshold_date)
-
-    full_preprocessed_df_unscaled = deepcopy(df_cpy)
 
     df_cpy['device_id'] = df_cpy['device_id'].astype('category').cat.codes
 
@@ -1205,7 +1206,7 @@ def fill_data_for_prediction(df: pd.DataFrame):
     df = df.fillna(method='ffill')
     return df
 
-def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None) -> pd.DataFrame:
+def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None, feature_count: int=26) -> pd.DataFrame:
     """
     args:   model_name: str
             scaler_name: str
@@ -1222,13 +1223,16 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     returns: pd.DataFrame
     """
 
-    full_model_name = model_name + '_' + aggregation_level
+    full_model_name = model_name + '_' + aggregation_level + '_' + str(feature_count) + 'f'
 
     df = load_dataframe(model_name=full_model_name)
     scaler = load_scaler(model_name=full_model_name)
-    model = load_transformer_model(model_name=full_model_name, y_feature=y_feature, device=device, input_dim=df.shape[1]-1)
+    model = load_transformer_model(model_name=full_model_name, y_feature=y_feature, device=device)
 
-    df = df[df[f'device_id_hka-aqm-{selected_room}'] == 1]
+    df['device_id_cat'] = df['device_id'].astype('category').cat.codes
+    df = df[df[f'device_id'] == f'hka-aqm-{selected_room}']
+    df['device_id'] = df['device_id_cat']
+    df.drop(['device_id_cat'], axis=1, inplace=True)
     df['date_time_rounded'] = pd.to_datetime(df['date_time_rounded'])
 
     # create a series of <window_size> time points before the start_time. Depending on the aggregation_level, the time points are rounded to the nearest hour, half hour, or quarter hour.
@@ -1270,13 +1274,13 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     result_df = df_timestamps.merge(df, on='date_time_rounded', how='left')
 
     # check if result_df has nan values
-    if result_df.isnull().values.any() and (result_df.shape[0] - result_df.dropna().shape[0]) > 0.5*result_df.shape[0]:
+    if result_df.isnull().values.any() and (result_df.shape[0] - result_df.dropna().shape[0]) < 0.5*result_df.shape[0]:
         result_df = fill_data_for_prediction(result_df)
     if result_df.isnull().values.any():
         # return empty dataframe
         return df_predictions
     
-    columns_to_scale = [col for col in result_df.columns if col != 'date_time_rounded']
+    columns_to_scale = [col for col in result_df.columns if col not in ['date_time_rounded', 'device_id', 'group']]
     y_feature_scaler_index = columns_to_scale.index(y_feature)
     model.eval()
     with torch.no_grad():
@@ -1284,10 +1288,14 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
         for j in range(result_df.shape[0] - window_size):
             df_subset = result_df.iloc[j:j+window_size]
             for i in range(prediction_count):
-                df_input = df_subset.tail(20).drop(['date_time_rounded', 'group'], axis=1).values
+                device_ids = df_subset.tail(20)['device_id'].values[-1]
+                cols_to_drop = ['date_time_rounded', 'group', 'device_id'] if 'group' in df_subset.columns else ['date_time_rounded', 'device_id']
+                df_input = df_subset.tail(20).drop(cols_to_drop, axis=1).values
                 df_input = scaler.transform(df_input)
                 input_data = torch.tensor(df_input, dtype=torch.float32).view(-1, window_size, df_input.shape[1])
-                prediction = model(input_data.to(device))
+                device_ids_tensor = torch.tensor(device_ids, dtype=torch.long).view(-1)
+
+                prediction = model(input_data.to(device), device_ids_tensor.to(device))
                 prediction = prediction.cpu().numpy().reshape(-1, 1)
                 zeroes_for_scaler = np.zeros((prediction.shape[0], len(columns_to_scale)))
 
