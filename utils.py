@@ -589,6 +589,7 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
 
             predictions.extend(predicted_batch_unscaled)
             actual.extend(actual_batch_unscaled)
+
         
         ### test for comparison for later, only works with quarter hour 26f data
         data_for_comparison = load_dataframe(model_name='transformer_multivariate_quarter_hour_26f')
@@ -612,6 +613,16 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
         inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
         predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(2)
         print(predicted_unscaled)
+
+        # save model and scaler again
+        save_model(model, model_name='transformer_multivariate_quarter_hour_26f_at_evaluation', y_feature='CO2')
+        save_scaler(scaler, model_name='transformer_multivariate_quarter_hour_26f_at_evaluation', y_feature='CO2')
+
+        # save the last input for reproducability
+        with open('data/last_batch.pkl', 'wb') as f:
+            pickle.dump((x_batch.cpu().numpy(), device_ids_batch.cpu().numpy(), y_batch.cpu().numpy()), f)
+
+        
 
     predictions = np.array(predictions)
     actual = np.array(actual)
@@ -992,7 +1003,7 @@ def get_data_for_multivariate_forecast(df: pd.DataFrame, y_feature: str='CO2', w
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test
 
-def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: str='CO2', window_size: int=5, aggregation_level: str = 'half_hour', batch_size: int=get_batch_size(), clean_data: bool=True, drop_columns: list=[]) -> np.array:
+def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: str='CO2', window_size: int=5, aggregation_level: str = 'half_hour', batch_size: int=get_batch_size(), clean_data: bool=True, drop_columns: list=[], extend_training_data: bool=True) -> np.array:
     """
     Creates the training and test data as well as the scaler and a dataframe with the full preprocessed data for multivariate-sequential-models.
     Currently the latest and best function to create the training and test data.
@@ -1008,6 +1019,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
             batch_size: int
             clean_data: bool=True
             drop_columns: list
+            extend_training_data: bool
 
 
     return train_dataset, test_dataset, train_loader, test_loader, scaler, y_test, full_preprocessed_df_unscaled, y_feature_scaler_index
@@ -1032,11 +1044,8 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
         df_cpy['date_time_rounded'] = df_cpy['date_time'].dt.round('15T')
     else:
         raise ValueError("Invalid aggregation_level. Please choose one of 'hour', 'half_hour', or 'quarter_hour'.")
-    
-    # add time dependent information
-    # df_cpy['weekday'] = df_cpy['date_time_rounded'].dt.weekday
-    # df_cpy['month'] = df_cpy['date_time_rounded'].dt.month
-    # df_cpy['hour_sin'] = np.sin(2 * np.pi * (df_cpy['date_time_rounded'].dt.hour * 3600 + df_cpy['date_time_rounded'].dt.minute * 60) / 86400.0)
+
+    # encode cyclic features
     df_cpy['weekday_sin'] = np.sin(2 * np.pi * df_cpy['date_time_rounded'].dt.weekday / 7)
     df_cpy['weekday_cos'] = np.cos(2 * np.pi * df_cpy['date_time_rounded'].dt.weekday / 7)
     df_cpy['month_sin'] = np.sin(2 * np.pi * df_cpy['date_time_rounded'].dt.month / 12)
@@ -1048,14 +1057,55 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
     df_cpy.loc[df_cpy['date_time_rounded'] >= '2023-09-01', 'semester'] = 'WS23/24'
     df_cpy = pd.get_dummies(df_cpy, columns=['semester'])
 
-    df_cpy = df_cpy.groupby(['device_id', 'date_time_rounded']).mean().reset_index()
+    df_cpy = df_cpy.groupby(['device_id', 'date_time_rounded']).mean(numeric_only=True).reset_index()
+    
+    def fill_consecutive_nans(device_df: pd.DataFrame, window_size: int):
+        max_consecutive_nans = window_size // 4
+        device_df = device_df.sort_values('date_time_rounded')
+        device_df['row_contains_no_nan'] = device_df.notna().all(axis=1).astype(int)
+        device_df['group'] = device_df['row_contains_no_nan'].cumsum()
+        reduced_df = deepcopy(device_df[device_df['row_contains_no_nan'] == False])
+        nan_count_in_group = reduced_df.groupby('group')['row_contains_no_nan'].transform('count')
+        #reduced_df['nan_count_in_group'] = np.where(reduced_df[y_feature].isna(), nan_count_in_group, 0)
+        #reduced_df.loc[reduced_df.isna().any(axis=1), 'nan_count_in_group'] = nan_count_in_group
+        device_df.loc[device_df.isna().any(axis=1), 'nan_count_in_group'] = nan_count_in_group.loc[device_df.isna().any(axis=1)]
+
+    
+        #device_df = pd.merge(device_df, reduced_df[['date_time_rounded', 'nan_count_in_group']], on='date_time_rounded', how='left')
+        device_df['nan_count_in_group'] = device_df['nan_count_in_group'].fillna(0)
+        device_df['device_id'] = device_df['device_id'].fillna(method='ffill')
+        device_df = device_df[device_df['nan_count_in_group'] <= max_consecutive_nans]
+        device_df.drop(columns=['row_contains_no_nan', 'group', 'nan_count_in_group'], inplace=True)
+        device_df[[col for col in device_df.columns if col != 'date_time_rounded']] = device_df[[col for col in device_df.columns if col != 'date_time_rounded']].interpolate(method='linear', axis=0)
+        
+        return device_df
+
+    
+    if extend_training_data:
+        df_cpy_extended = pd.DataFrame()
+        
+        for device_id in df_cpy['device_id'].unique():
+            device_data = df_cpy[df_cpy['device_id'] == device_id]
+            min_date = device_data['date_time_rounded'].min()
+            max_date = device_data['date_time_rounded'].max()
+            date_range = pd.date_range(start=min_date, end=max_date, freq=freq)
+            device_df = pd.DataFrame(date_range, columns=['date_time_rounded'])
+            #device_df['device_id'] = device_id
+            merged_df = pd.merge(device_df, device_data, on='date_time_rounded', how='left')
+            merged_df_filled = fill_consecutive_nans(merged_df, window_size)
+
+            df_cpy_extended = pd.concat([df_cpy_extended, merged_df_filled], ignore_index=True)
+        
+        print(f'extended data shape from {df_cpy.shape} to {df_cpy_extended.shape}')
+
+        df_cpy = deepcopy(df_cpy_extended)
+    
     
     # the data is now in the state that it needs to be so that it can be used as the context data at later predictions
     full_preprocessed_df_unscaled = deepcopy(df_cpy)
     
-    # create 'consecutive_data_point' thats 1 if the previous data point is 1 hour before the current data point and device_id is the same, else 0
-    time_delta = 3600 if aggregation_level == 'hour' else 1800 if aggregation_level == 'half_hour' else 900
-    df_cpy['consecutive_data_point'] = (df_cpy['date_time_rounded'] - df_cpy['date_time_rounded'].shift(1)).dt.total_seconds() == time_delta
+    # create 'consecutive_data_point' thats 1 if the previous data point is <freq> before the current data point and device_id is the same, else 0
+    df_cpy['consecutive_data_point'] = (df_cpy['date_time_rounded'] - df_cpy['date_time_rounded'].shift(1)).dt.total_seconds() == pd.to_timedelta(freq).total_seconds()
     df_cpy['consecutive_data_point'] = df_cpy['consecutive_data_point'].astype(int)
     
     # Identify changes and resets (when the value is '0' or there's a change in 'device_id')
@@ -1078,8 +1128,8 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
 
     df_cpy['device_id'] = df_cpy['device_id'].astype('category').cat.codes
 
-    df_train = df_cpy[df_cpy['date_time_rounded'] < threshold_date]
-    df_test = df_cpy[df_cpy['date_time_rounded'] >= threshold_date]
+    df_train = deepcopy(df_cpy[df_cpy['date_time_rounded'] < threshold_date])
+    df_test = deepcopy(df_cpy[df_cpy['date_time_rounded'] >= threshold_date])
 
     # Create the scaler instance
     scaler = StandardScaler()
@@ -1104,7 +1154,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
         device_ids = []
         for g_id in obs['group'].unique():
             group_df = obs[obs['group'] == g_id]
-            feature_values = group_df[f'{y_feature}'].to_numpy().reshape(-1, 1).flatten().tolist()
+            feature_values = group_df[f'{y_feature}'].tolist()
             for i in range(len(group_df) - seq_size):
                 window = group_df[i:(i + seq_size)]
                 after_window = feature_values[i + seq_size]
@@ -1116,6 +1166,7 @@ def get_data_for_multivarate_sequential_forecast(df: pd.DataFrame, y_feature: st
                 torch.tensor(device_ids, dtype=torch.long),
                 torch.tensor(y, dtype=torch.float32).view(-1, 1))
 
+    print("Creating sequences...")
     x_train, train_device_ids, y_train = to_sequences(window_size, df_train)
     x_test, test_device_ids, y_test = to_sequences(window_size, df_test)
 
