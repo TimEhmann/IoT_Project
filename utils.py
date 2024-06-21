@@ -168,7 +168,8 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None, 
         if version > 1:
             latest_dataframe = pd.read_parquet(f'data/{model_name}_dataframe_v{version-1}.parquet')
             latest_dataframe['date_time_rounded'] = pd.to_datetime(latest_dataframe['date_time_rounded'])
-            latest_dataframe['group'] = latest_dataframe['group'].astype('int32')
+            if 'group' in latest_dataframe.columns:
+                latest_dataframe['group'] = latest_dataframe['group'].astype('int32')
 
             for col in latest_dataframe.select_dtypes(include=['int64']).columns:
                 latest_dataframe[col] = latest_dataframe[col].astype('uint8')
@@ -185,7 +186,9 @@ def save_dataframe(df: pd.DataFrame, model_name: str=None, file_path: str=None, 
                 print(latest_dataframe.dtypes)
                 print(df.dtypes)
             
-            if df.drop(columns=['time_sin', 'time_cos']).equals(latest_dataframe.drop(columns=['time_sin', 'time_cos'])):
+            sin_and_cos_cols = [col for col in latest_dataframe.columns if '_sin' in col or '_cos' in col]
+            
+            if df.drop(columns=sin_and_cos_cols).equals(latest_dataframe.drop(columns=sin_and_cos_cols)):
                 print("Dataframe is already saved.")
                 return
             else:
@@ -703,7 +706,7 @@ def load_dataframe(file_path: str=None, model_name: str=None) -> pd.DataFrame:
         
         file_path = f'data/{model_name}_dataframe_v{version-1}.parquet'
         print("loading latest dataframe: " + file_path)
-    
+
     return pd.read_parquet(file_path)
 
 def get_data_for_prediction(df: pd.DataFrame, scaler: StandardScaler, clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2') -> pd.DataFrame:
