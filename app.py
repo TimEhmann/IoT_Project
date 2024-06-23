@@ -100,7 +100,11 @@ device = utils.get_device()
 #scaler = utils.load_scaler(selected_feature)
 #df_room_pred = utils.predict_data(model, scaler, df_room, device, y_feature=selected_feature)
 #df_room_date_pred = df_room_pred[df_room_pred['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")]
-df_room_date_pred = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast)
+window_size = 20
+df_room_date_pred = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data)
+# df_room_date_pred = pd.read_csv(r'data/transformer_multivariate_quarter_hour_26f_20ws_CO2_predictions.csv')
+# df_room_date_pred['date_time_rounded'] = pd.to_datetime(df_room_date_pred['date_time_rounded'])
+# df_room_date_pred = df_room_date_pred[(df_room_date_pred['date_time_rounded'].dt.date == input_date) & (df_room_date_pred['device_id'] == 'hka-aqm-'+input_device)]
 # merge with df_room_date on 'date_time_rounded'
 df_for_plot = pd.merge(df_room_date, df_room_date_pred, on='date_time_rounded', how='left', suffixes=('', '_pred'))
 #print(df_for_plot[f'{selected_feature}_pred'])
