@@ -109,7 +109,7 @@ def save_model(model: nn.Module, model_name: str=None, model_path: str=None, y_f
     else:
         torch.save(model, model_path)
 
-def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, overwrite: bool = False):
+def save_scaler(scaler: StandardScaler, model_name: str=None, scaler_path: str=None, overwrite: bool = True):
     """
     saves model to path or figures out the path
     """
@@ -217,13 +217,13 @@ def clean_df(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
     df_cpy['device_id'] = df_cpy['device_id'].str.strip()
     if clean_data:
         # in room am005, CO2 data starting 2023-07-05 is constantly 10k. Drop All Data >= 10k
-        df_cpy = df_cpy[df_cpy['CO2'] < 10000]
+        df_cpy = df_cpy[df_cpy['CO2'] < 2000]
         # drop all points where hum > 100
         df_cpy = df_cpy[df_cpy['hum'] <= 100]
         # drop all points where tmp > 100. Is 45°C realistic tho?
         df_cpy = df_cpy[df_cpy['tmp'] <= 100]
         # drop all points where VOC > 4000
-        df_cpy = df_cpy[df_cpy['VOC'] <= 4000]
+        df_cpy = df_cpy[df_cpy['VOC'] <= 2000]
         # I dont know what to do with the vis data. Unclear so far.
 
 
@@ -724,10 +724,6 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
         inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
         predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(2)
         print(predicted_unscaled)
-
-        # save model and scaler again
-        save_model(model, model_name=f'transformer_multivariate_quarter_hour_{input_dim+1}f_{window_size}ws_at_evaluation', y_feature=y_feature)
-        save_scaler(scaler, model_name=f'quarter_hour_{input_dim+1}f_{window_size}ws_at_evaluation')
 
         # save the last input for reproducability
         with open('data/last_batch.pkl', 'wb') as f:
