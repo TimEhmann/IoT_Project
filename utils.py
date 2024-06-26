@@ -747,7 +747,7 @@ def evaluate_transformer_model(device, test_loader: DataLoader, model: nn.Module
         print('predicted:', predicted)
 
         prediction = predicted.cpu().numpy().reshape(-1, 1)
-        zeroes_for_scaler = np.zeros((1, 25))
+        zeroes_for_scaler = np.zeros((1, input_dim))
 
         zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert predicted values into the correct column
         inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
@@ -857,7 +857,7 @@ def evaluate_lstm_model(device, test_loader: DataLoader, model: nn.Module, scale
         print('predicted:', predicted)
 
         prediction = predicted.cpu().numpy().reshape(-1, 1)
-        zeroes_for_scaler = np.zeros((1, 25))
+        zeroes_for_scaler = np.zeros((1, input_dim))
 
         zeroes_for_scaler[:, y_feature_scaler_index] = prediction.flatten()  # Insert predicted values into the correct column
         inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
