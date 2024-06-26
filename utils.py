@@ -18,6 +18,7 @@ import torch.optim as optim
 import warnings
 import gzip
 import shutil
+from sklearn.preprocessing import MinMaxScaler
 
 warnings.filterwarnings("ignore", category=UserWarning, module='sklearn.base')
 
@@ -222,14 +223,14 @@ def clean_df(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
         df_cpy = df_cpy[df_cpy['hum'] <= 100]
         # drop all points where tmp > 100. Is 45°C realistic tho?
         df_cpy = df_cpy[df_cpy['tmp'] <= 100]
-        # drop all points where VOC > 4000
-        df_cpy = df_cpy[df_cpy['VOC'] <= 2000]
+        # drop all points where VOC > 3000
+        df_cpy = df_cpy[df_cpy['VOC'] <= 3000]
         # I dont know what to do with the vis data. Unclear so far.
 
 
     return df_cpy
 
-def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO2', x_title: str=None, y_title: str=None, mode: str='lines+markers'):
+def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: list=['CO2'], x_title: str=None, y_title: str=None, mode: str='lines+markers', title=None, fig=None, name='Real Data'):
     """
     args:   df: pd.DataFrame
             x_feature: str
@@ -247,13 +248,42 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
         'hum': 'Humidity in %',
         'CO2': 'CO2 in ppm',
         'VOC': 'VOC in ppb',
-        'vis': 'Visibility? Maybe Raw Bit Format?',
+        'vis': 'Brightness?',
     }
-    x_title = feature_title_dictionary[x_feature] if x_feature in feature_title_dictionary and x_title is None else x_feature
-    y_title = feature_title_dictionary[y_feature] if y_feature in feature_title_dictionary and y_title is None else y_feature
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature], mode=mode, name='Real Data'))
+    if not isinstance(y_feature, list):
+        y_feature = [y_feature]
+    if fig is None:
+        fig = go.Figure()
+    x_title = feature_title_dictionary.get(x_feature, x_feature) if x_title is None else x_title
 
+    if len(y_feature) == 1:
+        fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature[0]], mode=mode, name=name))
+        y_title = feature_title_dictionary.get(y_feature[0], y_feature[0]) if y_title is None else y_title
+        fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+    elif len(y_feature) == 2:
+        y1_title = feature_title_dictionary.get(y_feature[0], y_feature[0])
+        y2_title = feature_title_dictionary.get(y_feature[1], y_feature[1])
+        
+        fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature[0]], mode=mode, name=y1_title + name, yaxis='y'))
+        fig.add_trace(go.Scatter(x=df[x_feature], y=df[y_feature[1]], mode=mode, name=y2_title + name, yaxis='y2'))
+        
+        fig.update_layout(
+            xaxis_title=x_title,
+            yaxis=dict(title=y1_title),
+            yaxis2=dict(title=y2_title, overlaying='y', side='right'),
+            title=title
+        )
+    else:
+        # Apply Min-Max scaling for more than two features
+        scaler = MinMaxScaler()
+        scaled_data = scaler.fit_transform(df[y_feature])
+        scaled_df = pd.DataFrame(scaled_data, columns=y_feature)
+        
+        # Plotting each scaled y feature on the same axis
+        for feature in y_feature:
+            fig.add_trace(go.Scatter(x=df[x_feature], y=scaled_df[feature], mode=mode, name=feature_title_dictionary.get(feature, feature) + name))
+        fig.update_layout(xaxis_title=x_title, yaxis_title='features scaled')
+            
     # add a trace for CO2_pred if it exists
     x_feature_pred = 'date_time_rounded' if 'date_time_rounded' in df.columns else 'date_time'
     if f'{y_feature}_pred_LSTM' in df.columns:
@@ -262,7 +292,6 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: str='CO
     if f'{y_feature}_pred_Transformer' in df.columns:
         if not df[f'{y_feature}_pred_Transformer'].isna().all():
             fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred_Transformer'], mode=mode, line=dict(color='Yellow'), name='Transformer'))
-    fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
     fig.update_yaxes(rangemode="tozero")
 
     return fig
@@ -834,10 +863,6 @@ def evaluate_lstm_model(device, test_loader: DataLoader, model: nn.Module, scale
         inverse_transformed = scaler.inverse_transform(zeroes_for_scaler)
         predicted_unscaled = inverse_transformed[:, y_feature_scaler_index].round(2)
         print(predicted_unscaled)
-
-        # save model and scaler again
-        save_model(model, model_name=f'lstm_multivariate_quarter_hour_{input_dim+1}f_{window_size}ws_at_evaluation', y_feature=y_feature)
-        save_scaler(scaler, model_name=f'quarter_hour_{input_dim+1}f_{window_size}ws_at_evaluation')
 
         # save the last input for reproducability
         with open('data/last_batch.pkl', 'wb') as f:
@@ -1457,7 +1482,7 @@ def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2'
 
     return model, scaler
 
-def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[]):
+def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True):
     """
     full pipeline to create a multi-variate transformer model for a selected feature.
     Currently best model. Doesnt use one-hot encoding (except of Semester, which has only 3 values), but embeddings to reduce dimensionality.
@@ -1479,8 +1504,8 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
     # Get the number of features from the data
     num_features = data.shape[2] + 1
     model_name = f'{aggregation_level}_{num_features}f_{window_size}ws'
-    save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=True)
-    save_scaler(scaler, model_name=model_name)
+    save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=overwrite)
+    save_scaler(scaler, model_name=model_name, overwrite=overwrite)
     
     # Train the model
     num_unique_devices = len(full_preprocessed_df_unscaled['device_id'].unique())
@@ -1630,7 +1655,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     
     return df_predictions
 
-def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int=get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, hidden_dim: int=64, num_layers: int=2, dropout: float=0.25, learning_rate: float=0.001, drop_columns: list=[]):
+def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int=get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, hidden_dim: int=64, num_layers: int=2, dropout: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True):
     """
     full pipeline to create a multi-variate LSTM model for a selected feature.
 
@@ -1651,7 +1676,7 @@ def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str=
     # Get the number of features from the data
     num_features = data.shape[2] + 1
     model_name = f'{aggregation_level}_{num_features}f_{window_size}ws'
-    save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=True)
+    save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=overwrite)
     save_scaler(scaler, model_name=model_name)
     
     # Train the model
@@ -1765,8 +1790,8 @@ def predict_data_multivariate_LSTM(model_name: str='lstm_multivariate', device: 
                 
                 # following lines are required when we want to predict multiple values for the future, not just 1
                 new_row = pd.DataFrame({
-                    'date_time_rounded': new_timestamp,
-                    y_feature: predicted_unscaled
+                    'date_time_rounded': [new_timestamp],
+                    y_feature: [predicted_unscaled]
                     # Add other columns here if necessary, filling with NaN or default values
                 })
                 # add output in a new row of the y_feature column of result_df and remove first line
