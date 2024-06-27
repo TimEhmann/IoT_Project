@@ -2,12 +2,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
-# import pyvista as pv
 import plotly.express as px
 import plotly.graph_objects as go
 import os
 import utils
-#from stpyvista import stpyvista
 from datetime import datetime
 from copy import deepcopy
 
@@ -82,11 +80,7 @@ with tab1:
        'channel_index', 'spreading_factor', 'bandwidth']
     features_to_feature = {'Temperature': 'tmp', 'Humidity': 'hum', 'CO2': 'CO2', 'VOC': 'VOC', 'Brightness': 'vis'}
     selected_features = []
-    with st.expander("Selected Features"):
-        for feature in features:
-            preselected = True if feature == 'CO2' else False
-            if st.checkbox(feature, value=preselected):  # Set value=True to preselect the checkbox
-                selected_features.append(feature)
+    selected_features = st.multiselect("Selected Features", features, default=['CO2'])
     selected_features = [features_to_feature.get(feature, feature) for feature in selected_features]
     print(selected_features)
     st.plotly_chart(utils.plot_figure(df_room_agg_day, y_feature=selected_features, mode='lines+markers'), use_container_width=True)
@@ -94,12 +88,10 @@ with tab1:
     with col2:
         #### IS THIS EVEN NEEDED??? WE CAN JUST USE ALL AND SELECT WEEKDAYS VIA PLOTLY PLOT
         weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        selected_weekdays = []
-
-        for day in weekdays:
-            # Create a checkbox for each day
-            if st.checkbox(day, True, key=day):
-                selected_weekdays.append(day)
+        selected_weekdays = weekdays
+        selected_feature_weekday = st.selectbox(label= "Select Feature", options= features, key='weekday_feature')
+        selected_feature_weekday = features_to_feature.get(selected_feature_weekday, selected_feature_weekday)
+        to_zero = st.checkbox(label= "Set y-axis to zero", value= False, key='to_zero_weekday')
 
     with col1:
         fig = go.Figure()
@@ -107,14 +99,14 @@ with tab1:
             df_weekday = df_room[df_room['date_time'].dt.day_name() == weekday]
             df_room_agg_hour_weekday = df_weekday.groupby(df_weekday['date_time'].dt.hour).mean().reset_index()
             # fig.add_trace(go.Scatter(x=df_room_agg_hour_weekday['date_time'], y=df_room_agg_hour_weekday[selected_features[0]], mode='lines+markers', name=weekday))
-            fig = utils.plot_figure(df_room_agg_hour_weekday, y_feature=selected_features, mode='lines+markers', fig=fig, name=" " + weekday)
+            fig = utils.plot_figure(df_room_agg_hour_weekday, y_feature=selected_feature_weekday, mode='lines+markers', fig=fig, name=" " + weekday, to_zero=to_zero)
 
-        fig.update_layout(title="Average values per hour for selected weekdays", xaxis_title="Hour")
+        fig.update_layout(title=f"Average values of {selected_feature_weekday} per hour for selected weekdays in {input_device}", xaxis_title="Hour")
         st.plotly_chart(fig, use_container_width=True)
         # st.plotly_chart(utils.plot_figure(df_room_agg_hour_weekday, y_feature=selected_features, mode='lines+markers'), use_container_width=True)
 
     ## CORRELATION MATRIX
-    correlation_matrix = df_room.corr()
+    correlation_matrix = df_room.drop(columns=['bandwidth']).corr()
     fig = px.imshow(correlation_matrix,
                     text_auto=".2f",
                     labels=dict(x="Feature", y="Feature", color="Correlation"),
@@ -174,7 +166,7 @@ with tab1:
 
 
     ## ROOM DIFFERENCES PER SEMESTER
-    st.markdown("## ROOM DIFFERENCES PER SEMESTER")
+    st.markdown("## Room differences per semester")
     st.markdown('#### Show the rooms with the highest and lowest average for a given feature')
     col1, col2 = st.columns([5,1])
     with col2:
@@ -225,30 +217,19 @@ with tab1:
         # st.plotly_chart(utils.plot_figure(df_room_agg_hour_weekday, y_feature=selected_features, mode='lines+markers'), use_container_width=True)
 
 
-    
-
-
 # Data Forecast
 with tab2:
 
-    c1, c2, c3 = st.columns([2, 1.2, 2])
+    c1, c2 = st.columns([1,1])
 
     with c1:
         container = st.container(border=True)
         with container:
-            st.markdown("## Placeholder for building model")
-
-    with c2:
-        container = st.container(border=True)
-        with container:
-            points_to_forecast = st.number_input(label= "Points to Forecast", value= 1, min_value= 1, max_value= 10, step= 1)
-            
             models = ["Transformer", "LSTM"]
             selected_models = []
-            with st.expander("Selected Models"):
-                for model in models:
-                    if st.checkbox(model, value=True):  # Set value=True to preselect the checkbox
-                        selected_models.append(model)
+            selected_models = st.multiselect("Selected Models", options=models, default=models)
+            
+            points_to_forecast = st.number_input(label= "Points to Forecast", value= 1, min_value= 1, max_value= 10, step= 1)
             
             feature_data = st.selectbox(label= "Feature", options= ["Temperature", "Humidity", "CO2", "VOC", "Brightness"])
             feature_name_to_feature = {"Temperature": "tmp", "Humidity": "hum", "CO2": "CO2", "VOC": "VOC", "Brightness": "vis"}
@@ -262,7 +243,7 @@ with tab2:
             df_room_date = deepcopy(df_room[df_room['date_time'].dt.strftime("%Y-%m-%d") == input_date.strftime("%Y-%m-%d")])
             df_room_date['date_time_rounded'] = df_room_date['date_time'].dt.round(frequency)
 
-    with c3:
+    with c2:
         kpi_tmp, kpi_hum = st.columns(2)
         kpi_co2, kpi_voc = st.columns(2)
         kpi_vis, placeholder = st.columns(2)
@@ -300,7 +281,8 @@ with tab2:
     if 'Transformer' in selected_models:
         df_room_date_pred_Transformer = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data,feature_count=25,selected_building=selected_building)
         df_room_date = pd.merge(df_room_date, df_room_date_pred_Transformer, on='date_time_rounded', how='left', suffixes=('', '_pred_Transformer'))
-
+    
+    print(df_room_date.columns)
     st.markdown("## Detailed Data View")
 
     pred_columns = [column for column in df_room_date.columns if '_pred' in column]
