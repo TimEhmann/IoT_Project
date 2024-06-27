@@ -3,3 +3,5 @@ hka-aqm-a/*
 hka-aqm-f
 hka-aqm-am
 __pycache__/*
+data/*_predictions.csv
+data/*predictions.csv
