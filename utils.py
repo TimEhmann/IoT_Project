@@ -1482,7 +1482,7 @@ def create_multivariate_model_for_feature(df: pd.DataFrame, y_feature: str='CO2'
 
     return model, scaler
 
-def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True):
+def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int =get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, d_model: int=64, nhead: int=4, num_layers: int=2, dropout_pe: float=0.25, dropout_encoder: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True,selected_building: str='am'):
     """
     full pipeline to create a multi-variate transformer model for a selected feature.
     Currently best model. Doesnt use one-hot encoding (except of Semester, which has only 3 values), but embeddings to reduce dimensionality.
@@ -1503,7 +1503,7 @@ def create_multivariate_transformer_model_for_feature(df: pd.DataFrame, y_featur
 
     # Get the number of features from the data
     num_features = data.shape[2] + 1
-    model_name = f'{aggregation_level}_{num_features}f_{window_size}ws'
+    model_name = f'{aggregation_level}_{num_features}f_{window_size}ws_{selected_building}'
     save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=overwrite)
     save_scaler(scaler, model_name=model_name, overwrite=overwrite)
     
@@ -1535,7 +1535,7 @@ def fill_data_for_prediction(df: pd.DataFrame):
     df = df.fillna(method='ffill')
     return df
 
-def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None, feature_count: int=26) -> pd.DataFrame:
+def predict_data_multivariate_transformer(model_name: str='transformer_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None, feature_count: int=26, selected_building: str='am') -> pd.DataFrame:
     """
     args:   model_name: str
             scaler_name: str
@@ -1552,7 +1552,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     returns: pd.DataFrame
     """
 
-    full_model_name = aggregation_level + '_' + str(feature_count) + 'f' + '_' + str(window_size) + 'ws'
+    full_model_name = aggregation_level + '_' + str(feature_count) + 'f' + '_' + str(window_size) + 'ws' + '_' + selected_building
     
     df = load_dataframe(model_name=full_model_name)
     scaler = load_scaler(model_name=full_model_name)
@@ -1655,7 +1655,7 @@ def predict_data_multivariate_transformer(model_name: str='transformer_multivari
     
     return df_predictions
 
-def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int=get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, hidden_dim: int=64, num_layers: int=2, dropout: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True):
+def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str='CO2', aggregation_level: str='quarter_hour', device: torch.device=get_device(), window_size: int=20, batch_size: int=get_batch_size(), epochs: int=1000, clean_data: bool=True, input_dim: int=None, hidden_dim: int=64, num_layers: int=2, dropout: float=0.25, learning_rate: float=0.001, drop_columns: list=[], overwrite: bool=True,selected_building: str='am'):
     """
     full pipeline to create a multi-variate LSTM model for a selected feature.
 
@@ -1675,7 +1675,7 @@ def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str=
 
     # Get the number of features from the data
     num_features = data.shape[2] + 1
-    model_name = f'{aggregation_level}_{num_features}f_{window_size}ws'
+    model_name = f'{aggregation_level}_{num_features}f_{window_size}ws_{selected_building}'
     save_dataframe(full_preprocessed_df_unscaled, model_name=model_name, overwrite=overwrite)
     save_scaler(scaler, model_name=model_name)
     
@@ -1692,7 +1692,7 @@ def create_multivariate_lstm_model_for_feature(df: pd.DataFrame, y_feature: str=
 
     return model, scaler, rmse, mae, me, mape, train_loss, val_loss, num_features
 
-def predict_data_multivariate_LSTM(model_name: str='lstm_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None, feature_count: int=26) -> pd.DataFrame:
+def predict_data_multivariate_LSTM(model_name: str='lstm_multivariate', device: torch.device=get_device(), clean_data: bool=True, window_size: int=20, aggregation_level: str='quarter_hour', y_feature: str='CO2', batch_size: int=get_batch_size(), start_time: np.datetime64=None, prediction_count: int=1, selected_room: str=None, feature_count: int=26,selected_building: str='am') -> pd.DataFrame:
     """
     args:   model_name: str
             scaler_name: str
@@ -1709,7 +1709,7 @@ def predict_data_multivariate_LSTM(model_name: str='lstm_multivariate', device: 
     returns: pd.DataFrame
     """
 
-    full_model_name = aggregation_level + '_' + str(feature_count) + 'f' + '_' + str(window_size) + 'ws'
+    full_model_name = aggregation_level + '_' + str(feature_count) + 'f' + '_' + str(window_size) + 'ws' + '_' + selected_building
     df = load_dataframe(model_name=full_model_name)
     scaler = load_scaler(model_name=full_model_name)
     model = load_model(model_name=model_name + '_' + full_model_name, y_feature=y_feature, device=device)
