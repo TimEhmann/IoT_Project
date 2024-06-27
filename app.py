@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 # import pyvista as pv
-#import plotly.express as px
+import plotly.express as px
 import plotly.graph_objects as go
 import os
 import utils
@@ -295,10 +295,10 @@ with tab2:
     device = utils.get_device()
     window_size = 20
     if 'LSTM' in selected_models:
-        df_room_date_pred_LSTM = utils.predict_data_multivariate_LSTM(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data)
+        df_room_date_pred_LSTM = utils.predict_data_multivariate_LSTM(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data,feature_count=25,selected_building=selected_building)
         df_room_date = pd.merge(df_room_date, df_room_date_pred_LSTM, on='date_time_rounded', how='left', suffixes=('', '_pred_LSTM'))
     if 'Transformer' in selected_models:
-        df_room_date_pred_Transformer = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data)
+        df_room_date_pred_Transformer = utils.predict_data_multivariate_transformer(selected_room=input_device, start_time=input_date, y_feature=selected_feature, aggregation_level=aggregation_level, prediction_count=points_to_forecast, window_size=window_size, device=device, clean_data=clean_data,feature_count=25,selected_building=selected_building)
         df_room_date = pd.merge(df_room_date, df_room_date_pred_Transformer, on='date_time_rounded', how='left', suffixes=('', '_pred_Transformer'))
 
     st.markdown("## Detailed Data View")
