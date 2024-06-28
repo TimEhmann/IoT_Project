@@ -21,10 +21,11 @@ st.title("Dashboard Building AM")
 cwd = os.getcwd()
 st.sidebar.header("Dashboard Building AM")
 selected_building = st.sidebar.selectbox(label= "Select Building", options= ['am', 'f'])
-directory = cwd +f'/hka-aqm-{selected_building}/'
-files = [f.removeprefix('._') for f in os.listdir(directory)]
-rooms = sorted(set([f.split("_")[0].removeprefix('hka-aqm-') for f in files]))
-available_dates_per_room = {room: sorted(set([f.split("_", 1)[1].split(".")[0] for f in files if f.split("_")[0].removeprefix('hka-aqm-') == room])) for room in rooms}
+df_full_data = pd.read_parquet(f'data/hka-aqm-{selected_building}-combined-RAW.parquet')
+df_full_data['device_id'] = df_full_data['device_id'].str.strip()
+df_full_data['date_time'] = pd.to_datetime(df_full_data['date_time'])
+rooms = sorted(set([f.removeprefix('hka-aqm-') for f in df_full_data['device_id'].unique()]))
+available_dates_per_room = {room: sorted(set(df_full_data[df_full_data['device_id'] == f'hka-aqm-{room}']['date_time'].dt.strftime("%Y_%m_%d"))) for room in rooms}
 
 # Sidebar
 input_device = st.sidebar.selectbox(label= "Select Room", options= rooms)
@@ -36,15 +37,14 @@ input_date = st.sidebar.date_input(label= "Select Date", value= min_date, min_va
 clean_data = st.sidebar.checkbox(label= "Clean Data", value= True)
 
 # Room data for the selected room
-df_full_data = pd.read_parquet(f'data/hka-aqm-{selected_building}-combined-RAW.parquet')
 df_full_data = df_full_data.drop(columns=['channel_rssi', 'channel_index'])
 df_full_data['device_id'] = df_full_data['device_id'].str.strip()
 df_room = deepcopy(df_full_data[df_full_data['device_id'] == f'hka-aqm-{input_device}'])
 df_room = utils.clean_df(df_room, clean_data)
 df_full_data = utils.clean_df(df_full_data, clean_data)
 
-# check if file for the selected date exists
-data_exists = os.path.exists(directory + f"hka-aqm-{input_device}_{str(input_date).replace('-', '_')}.dat")
+# check if data exists for the selected room and date
+data_exists = df_room[df_room['device_id'] == f'hka-aqm-{input_device}']['date_time'].dt.strftime("%Y_%m_%d").str.contains(input_date.strftime("%Y_%m_%d")).any()
 if not data_exists:
     st.markdown("## No data available")
     st.markdown(f"## Overview of available dates for {input_device}")
