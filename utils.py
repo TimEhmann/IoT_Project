@@ -230,7 +230,7 @@ def clean_df(df: pd.DataFrame, clean_data: bool=True) -> pd.DataFrame:
 
     return df_cpy
 
-def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: list=['CO2'], x_title: str=None, y_title: str=None, mode: str='lines+markers', title=None, fig=None, name='Real Data'):
+def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: list=['CO2'], x_title: str=None, y_title: str=None, mode: str='lines+markers', title=None, fig=None, name='Real Data', to_zero=True):
     """
     args:   df: pd.DataFrame
             x_feature: str
@@ -286,13 +286,14 @@ def plot_figure(df: pd.DataFrame, x_feature: str='date_time', y_feature: list=['
             
     # add a trace for CO2_pred if it exists
     x_feature_pred = 'date_time_rounded' if 'date_time_rounded' in df.columns else 'date_time'
-    if f'{y_feature}_pred_LSTM' in df.columns:
-        if not df[f'{y_feature}_pred_LSTM'].isna().all():
-            fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred_LSTM'], mode=mode, line=dict(color='red'), name='LSTM'))
-    if f'{y_feature}_pred_Transformer' in df.columns:
-        if not df[f'{y_feature}_pred_Transformer'].isna().all():
-            fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature}_pred_Transformer'], mode=mode, line=dict(color='Yellow'), name='Transformer'))
-    fig.update_yaxes(rangemode="tozero")
+    if f'{y_feature[0]}_pred_LSTM' in df.columns:
+        if not df[f'{y_feature[0]}_pred_LSTM'].isna().all():
+            fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature[0]}_pred_LSTM'], mode=mode, line=dict(color='red'), name='LSTM'))
+    if f'{y_feature[0]}_pred_Transformer' in df.columns:
+        if not df[f'{y_feature[0]}_pred_Transformer'].isna().all():
+            fig.add_trace(go.Scatter(x=df[x_feature_pred], y=df[f'{y_feature[0]}_pred_Transformer'], mode=mode, line=dict(color='Yellow'), name='Transformer'))
+    if to_zero:
+        fig.update_yaxes(rangemode="tozero")
 
     return fig
 
@@ -837,8 +838,15 @@ def evaluate_lstm_model(device, test_loader: DataLoader, model: nn.Module, scale
             f'{y_feature}_prediction_LSTM': combined_predictions
         })
 
+        prediction_df['date_time'] = pd.to_datetime(prediction_df['date_time'])
+        first_date = prediction_df['date_time'].iloc[0]
+        second_date = prediction_df['date_time'].iloc[1]
+
+        diff_in_min = int(pd.Timedelta(second_date - first_date).seconds / 60)
+
+
         # Save the predictions to a CSV file
-        prediction_df.to_csv(f'data/lstm_multivariate_quarter_hour_{input_dim+1}f_{window_size}ws_{y_feature}_predictions.csv', index=False)
+        prediction_df.to_csv(f'data/lstm_multivariate_{diff_in_min}_{input_dim+1}f_{window_size}ws_{y_feature}_predictions.csv', index=False)
 
         
         ### test for comparison for later, only works with quarter hour 26f data
